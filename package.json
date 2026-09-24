@@ -7,7 +7,8 @@
     "start": "node --env-file-if-exists=.env --import tsx src/main.ts",
     "seed": "node --env-file-if-exists=.env --import tsx src/seed.ts",
     "test": "node --import tsx --test --test-reporter=spec \"test/**/*.test.ts\"",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "bench": "node --import tsx bench/load.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",

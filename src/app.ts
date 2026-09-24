@@ -43,6 +43,7 @@ export function createApp(config: Config, deps: AppDeps = {}) {
   const jobs = new Jobs(db, clock);
   const outbox = new Outbox(db, jobs, clock, messaging, {
     weeklyInviteCap: config.weeklyInviteCap, templateLanguage: config.whatsapp.templateLanguage,
+    maxPerSecond: config.whatsapp.maxPerSecond, sendConcurrency: config.whatsapp.sendConcurrency,
   });
   const notify = new Notifier(db, outbox);
   const members = new Members(db, clock, config.consentPolicyVersion);
@@ -104,13 +105,16 @@ export function createApp(config: Config, deps: AppDeps = {}) {
     /** Queue inbound messages for async processing (Meta expects a fast 200). */
     ingestInbound(messages: InboundMessage[], statuses: StatusUpdate[] = []): number {
       // (the shared number receives every community's traffic; routing happens in the bot)
-      let queued = 0;
-      for (const m of messages) {
-        const id = recordWebhook('whatsapp', m.providerMessageId, m);
-        if (id) { jobs.schedule('process_inbound', { webhookId: id }); queued++; }
-      }
-      statuses.forEach(applyStatus);
-      return queued;
+      // One transaction per webhook delivery: a batch of messages costs one commit, not one each.
+      return db.tx(() => {
+        let queued = 0;
+        for (const m of messages) {
+          const id = recordWebhook('whatsapp', m.providerMessageId, m);
+          if (id) { jobs.schedule('process_inbound', { webhookId: id }); queued++; }
+        }
+        statuses.forEach(applyStatus);
+        return queued;
+      });
     },
 
     whatsapp(rawBody: Buffer, signature: string | undefined): { ok: boolean; status: number } {

@@ -24,6 +24,19 @@ export type SendDecision =
   | { ok: true; messageId: string; duplicate?: boolean }
   | { ok: false; reason: 'blocked' | 'no_consent' | 'frequency_cap' | 'no_template' | 'community_inactive' };
 
+/** Spaces calls evenly to stay under the provider's per-number throughput. */
+export class RateLimiter {
+  private next = 0;
+  constructor(private readonly perSecond: number) {}
+  async take(): Promise<void> {
+    if (!(this.perSecond > 0)) return;
+    const now = Date.now();
+    const slot = Math.max(now, this.next);
+    this.next = slot + 1000 / this.perSecond;
+    if (slot > now) await new Promise((r) => setTimeout(r, slot - now));
+  }
+}
+
 // Meta's window is 24h from the player's last message; keep a safety margin.
 const WINDOW_MINUTES = 24 * 60 - 10;
 
@@ -40,10 +53,13 @@ export class Outbox {
     private readonly jobs: Jobs,
     private readonly clock: Clock,
     private readonly provider: MessagingProvider,
-    private readonly opts: { weeklyInviteCap: number; templateLanguage: string },
+    private readonly opts: { weeklyInviteCap: number; templateLanguage: string; maxPerSecond?: number; sendConcurrency?: number },
   ) {
-    jobs.on('send_message', (p) => this.deliver(p.messageId));
+    this.limiter = new RateLimiter(opts.maxPerSecond ?? 60);
+    jobs.on('send_message', (p) => this.deliver(p.messageId), { concurrency: opts.sendConcurrency ?? 32 });
   }
+
+  private readonly limiter: RateLimiter;
 
   send(o: SendOptions): SendDecision {
     if (o.idempotencyKey) {
@@ -116,6 +132,7 @@ export class Outbox {
     else return void setStatus('failed', { error: 'window closed and no template for this message' });
 
     try {
+      await this.limiter.take();
       const { providerMessageId } = await this.provider.send({ to: m.phone, form });
       setStatus('sent', { providerId: providerMessageId, kind: form.type === 'template' ? 'template' : env.session.kind });
     } catch (e: any) {

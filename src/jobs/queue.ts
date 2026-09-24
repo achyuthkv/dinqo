@@ -5,21 +5,29 @@ import { newId } from '../util/ids.ts';
 export type JobHandler = (payload: any) => Promise<void> | void;
 
 const MAX_ATTEMPTS = 6;
+const BATCH = 500;
+
+interface Registered { handler: JobHandler; concurrency: number }
 
 /**
  * Durable job queue on SQLite. Timers (hold expiry, waitlist offers, reminders)
  * and every external call (WhatsApp sends, payment links, refunds) run as jobs,
  * so a crash or provider outage never loses work — it is retried with backoff.
+ *
+ * Most job types run one at a time, which keeps booking state changes simple.
+ * Pure I/O jobs (message sends) declare a concurrency so a Monday poll to
+ * thousands of players goes out in parallel instead of one API call at a time.
  */
 export class Jobs {
-  private handlers = new Map<string, JobHandler>();
+  private handlers = new Map<string, Registered>();
   private timer?: NodeJS.Timeout;
   private busy = false;
+  private stopped = false;
 
   constructor(private readonly db: Db, private readonly clock: Clock) {}
 
-  on(type: string, handler: JobHandler): void {
-    this.handlers.set(type, handler);
+  on(type: string, handler: JobHandler, opts: { concurrency?: number } = {}): void {
+    this.handlers.set(type, { handler, concurrency: Math.max(1, opts.concurrency ?? 1) });
   }
 
   /**
@@ -51,36 +59,53 @@ export class Jobs {
     );
   }
 
-  /** Runs every job that is due right now. Returns how many ran. */
-  async tick(limit = 50): Promise<number> {
+  /** Runs every job that is due right now (up to `limit`). Returns how many were picked up. */
+  async tick(limit = BATCH): Promise<number> {
     const due = this.db.all(
       `SELECT * FROM jobs WHERE status = 'pending' AND run_at <= ? ORDER BY run_at, created_at LIMIT ?`,
       iso(this.clock.now()), limit,
     );
+    const serial: any[] = [];
+    const parallel = new Map<string, any[]>();
     for (const job of due) {
-      const claimed = this.db.run(
-        `UPDATE jobs SET status = 'running', attempts = attempts + 1, updated_at = ? WHERE id = ? AND status = 'pending'`,
-        iso(this.clock.now()), job.id,
-      );
-      if (!claimed.changes) continue;
-      const handler = this.handlers.get(job.type);
-      try {
-        if (!handler) throw Object.assign(new Error(`No handler for job type ${job.type}`), { permanent: true });
-        await handler(JSON.parse(job.payload));
-        this.db.run(`UPDATE jobs SET status = 'done', updated_at = ? WHERE id = ? AND status = 'running'`, iso(this.clock.now()), job.id);
-      } catch (e: any) {
-        const attempts = job.attempts + 1;
-        const giveUp = e?.permanent || attempts >= MAX_ATTEMPTS;
-        const backoff = Math.min(2 ** attempts, 60); // minutes
-        this.db.run(
-          `UPDATE jobs SET status = ?, run_at = ?, last_error = ?, updated_at = ? WHERE id = ?`,
-          giveUp ? 'failed' : 'pending', iso(addMinutes(this.clock.now(), backoff)),
-          String(e?.stack ?? e).slice(0, 2000), iso(this.clock.now()), job.id,
-        );
-        if (giveUp) console.error(`[jobs] ${job.type} ${job.id} failed permanently:`, e?.message ?? e);
-      }
+      const reg = this.handlers.get(job.type);
+      if (reg && reg.concurrency > 1) parallel.set(job.type, [...(parallel.get(job.type) ?? []), job]);
+      else serial.push(job);
+    }
+    // Serial jobs first (in due order), then each parallel type through a bounded pool.
+    for (const job of serial) await this.run(job);
+    for (const [type, jobs] of parallel) {
+      const width = this.handlers.get(type)!.concurrency;
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(width, jobs.length) }, async () => {
+        while (next < jobs.length) await this.run(jobs[next++]);
+      }));
     }
     return due.length;
+  }
+
+  private async run(job: any): Promise<void> {
+    const claimed = this.db.run(
+      `UPDATE jobs SET status = 'running', attempts = attempts + 1, updated_at = ? WHERE id = ? AND status = 'pending'`,
+      iso(this.clock.now()), job.id,
+    );
+    if (!claimed.changes) return;
+    const reg = this.handlers.get(job.type);
+    try {
+      if (!reg) throw Object.assign(new Error(`No handler for job type ${job.type}`), { permanent: true });
+      await reg.handler(JSON.parse(job.payload));
+      this.db.run(`UPDATE jobs SET status = 'done', updated_at = ? WHERE id = ? AND status = 'running'`, iso(this.clock.now()), job.id);
+    } catch (e: any) {
+      const attempts = job.attempts + 1;
+      const giveUp = e?.permanent || attempts >= MAX_ATTEMPTS;
+      const backoff = Math.min(2 ** attempts, 60); // minutes
+      this.db.run(
+        `UPDATE jobs SET status = ?, run_at = ?, last_error = ?, updated_at = ? WHERE id = ?`,
+        giveUp ? 'failed' : 'pending', iso(addMinutes(this.clock.now(), backoff)),
+        String(e?.stack ?? e).slice(0, 2000), iso(this.clock.now()), job.id,
+      );
+      if (giveUp) console.error(`[jobs] ${job.type} ${job.id} failed permanently:`, e?.message ?? e);
+    }
   }
 
   /** Runs due jobs until none are left (jobs may enqueue more jobs). Used by tests and dev tools. */
@@ -90,15 +115,23 @@ export class Jobs {
     }
   }
 
+  /** Polls for due jobs; keeps going without waiting while there is a backlog. */
   start(intervalMs = 1000): void {
-    this.timer = setInterval(async () => {
-      if (this.busy) return;
-      this.busy = true;
-      try { await this.tick(); } catch (e) { console.error('[jobs] tick error', e); } finally { this.busy = false; }
-    }, intervalMs);
+    this.stopped = false;
+    const loop = async () => {
+      if (this.stopped) return;
+      let picked = 0;
+      if (!this.busy) {
+        this.busy = true;
+        try { picked = await this.tick(); } catch (e) { console.error('[jobs] tick error', e); } finally { this.busy = false; }
+      }
+      this.timer = setTimeout(loop, picked >= BATCH ? 0 : intervalMs);
+    };
+    this.timer = setTimeout(loop, 0);
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
   }
 }

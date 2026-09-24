@@ -99,7 +99,7 @@ test('Monday poll → members mark availability → organiser fills the rest', a
 test('an unanswered regular can be nudged by fill; a guest cannot self-book an uninvited game', async () => {
   const { h, ids } = await setup();
   h.clock.set('2026-09-21T03:30:00.000Z');
-  h.app.polls.run(h.community.id);
+  await h.app.polls.run(h.community.id);
   const sat = h.app.events.list(h.community.id).find((g) => g.title === 'Saturday Morning Open')!;
 
   await h.tap(G2, PollActions.pick(sat.id));

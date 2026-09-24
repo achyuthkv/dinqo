@@ -17,6 +17,10 @@ export interface Config {
     displayNumber: string;       // the shared Dinqo number players message, for wa.me join links
     graphVersion: string;
     templateLanguage: string;
+    /** Outbound messages per second (Meta's Cloud API default is 80/s per number). */
+    maxPerSecond: number;
+    /** Parallel in-flight API calls. */
+    sendConcurrency: number;
   };
   payments: {
     provider: 'fake' | 'razorpay';
@@ -49,6 +53,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       displayNumber: env('WHATSAPP_DISPLAY_NUMBER', '919000000000'),
       graphVersion: env('WHATSAPP_GRAPH_VERSION', 'v23.0'),
       templateLanguage: env('WHATSAPP_TEMPLATE_LANGUAGE', 'en'),
+      maxPerSecond: Number(env('WHATSAPP_MAX_MPS', '60')),
+      sendConcurrency: Number(env('WHATSAPP_SEND_CONCURRENCY', '32')),
     },
     payments: {
       provider: env('PAYMENTS_PROVIDER', 'fake') as 'fake' | 'razorpay',

@@ -3,15 +3,20 @@
 export const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 export type Weekday = (typeof WEEKDAYS)[number];
 
+const partsFormatters = new Map<string, Intl.DateTimeFormat>();
+
 export interface LocalParts { year: number; month: number; day: number; hour: number; minute: number; weekday: Weekday }
 
 export function localParts(d: Date, tz: string): LocalParts {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat('en-US', {
+  let f = partsFormatters.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', {
       timeZone: tz, year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric',
       weekday: 'short', hourCycle: 'h23',
-    }).formatToParts(d).map((p) => [p.type, p.value]),
-  );
+    });
+    partsFormatters.set(tz, f);
+  }
+  const parts = Object.fromEntries(f.formatToParts(d).map((p) => [p.type, p.value]));
   return {
     year: Number(parts.year), month: Number(parts.month), day: Number(parts.day),
     hour: Number(parts.hour), minute: Number(parts.minute),

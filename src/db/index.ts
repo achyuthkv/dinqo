@@ -1,4 +1,4 @@
-import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
+import { DatabaseSync, type SQLInputValue, type StatementSync } from 'node:sqlite';
 import { readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -17,7 +17,8 @@ export class Db {
   constructor(path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.raw = new DatabaseSync(path);
-    this.raw.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+    // WAL + synchronous=NORMAL: durable across process crashes, one fsync per checkpoint instead of per commit.
+    this.raw.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   }
 
   /** Applies migrations/NNN_*.sql in order, tracking progress in PRAGMA user_version. */
@@ -36,16 +37,27 @@ export class Db {
     }
   }
 
+  /** Prepared statements are cached by SQL text; the app uses a fixed set of queries. */
+  private readonly statements = new Map<string, StatementSync>();
+  private stmt(sql: string): StatementSync {
+    let st = this.statements.get(sql);
+    if (!st) {
+      st = this.raw.prepare(sql);
+      if (this.statements.size < 1000) this.statements.set(sql, st);
+    }
+    return st;
+  }
+
   get<T = Row>(sql: string, ...params: Params): T | undefined {
-    return this.raw.prepare(sql).get(...params) as T | undefined;
+    return this.stmt(sql).get(...params) as T | undefined;
   }
 
   all<T = Row>(sql: string, ...params: Params): T[] {
-    return this.raw.prepare(sql).all(...params) as T[];
+    return this.stmt(sql).all(...params) as T[];
   }
 
   run(sql: string, ...params: Params): { changes: number } {
-    const r = this.raw.prepare(sql).run(...params);
+    const r = this.stmt(sql).run(...params);
     return { changes: Number(r.changes) };
   }
 

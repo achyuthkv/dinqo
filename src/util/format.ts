@@ -1,5 +1,14 @@
 const TZ = 'Asia/Kolkata';
 
+// Building an Intl.DateTimeFormat is expensive (~0.1 ms); a poll formats thousands of dates.
+const formatters = new Map<string, Intl.DateTimeFormat>();
+function formatter(kind: string, tz: string, opts: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = `${kind}|${tz}`;
+  let f = formatters.get(key);
+  if (!f) formatters.set(key, (f = new Intl.DateTimeFormat('en-IN', { ...opts, timeZone: tz })));
+  return f;
+}
+
 export function rupees(paise: number): string {
   const r = paise / 100;
   return '₹' + (Number.isInteger(r) ? r.toLocaleString('en-IN') : r.toFixed(2));
@@ -7,14 +16,12 @@ export function rupees(paise: number): string {
 
 /** "Sun, 20 Sep" */
 export function day(isoStr: string, tz = TZ): string {
-  return new Intl.DateTimeFormat('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: tz })
-    .format(new Date(isoStr));
+  return formatter('day', tz, { weekday: 'short', day: 'numeric', month: 'short' }).format(new Date(isoStr));
 }
 
 /** "7:00 am" */
 export function time(isoStr: string, tz = TZ): string {
-  return new Intl.DateTimeFormat('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: tz })
-    .format(new Date(isoStr)).toLowerCase();
+  return formatter('time', tz, { hour: 'numeric', minute: '2-digit', hour12: true }).format(new Date(isoStr)).toLowerCase();
 }
 
 /** "Sun, 20 Sep, 7:00 am" */

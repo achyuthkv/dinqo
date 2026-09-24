@@ -102,7 +102,7 @@ test('pending communities cannot message players', async () => {
     ends_at: new Date(h.clock.now().getTime() + 90000_000).toISOString(),
   });
   assert.equal(h.app.events.invite(e.id, [pid])[0].reason, 'community_inactive');
-  assert.equal(h.app.polls.run(c.id).poll_id, null);
+  assert.equal((await h.app.polls.run(c.id)).poll_id, null);
 });
 
 // -------------------------------------------------------------- Route payouts
