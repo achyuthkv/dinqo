@@ -13,12 +13,24 @@ export interface TemplateDef {
 }
 
 export const TEMPLATES: Record<string, TemplateDef> = {
+  // Meta's fixed authentication format; create it as an Authentication template with a copy-code button.
+  dinqo_login_code: {
+    name: 'dinqo_login_code',
+    category: 'authentication',
+    body: '*{{1}}* is your verification code. For your security, do not share this code.',
+    buttons: ['Copy code'],
+  },
   dinqo_availability_poll: {
     name: 'dinqo_availability_poll',
     category: 'marketing',
     // Template params cannot contain newlines, so {{3}} is a "; "-separated list.
     body: 'Hi {{1}} 👋 {{2}} is playing this week: {{3}}\n\nTap below to mark the games you can make.',
     buttons: ['Mark availability', 'Not this week'],
+  },
+  dinqo_membership_approved: {
+    name: 'dinqo_membership_approved',
+    category: 'utility',
+    body: "You're in! 🎉 *{{1}}* has approved your membership. Reply *menu* anytime to see games and your bookings.",
   },
   dinqo_game_invite: {
     name: 'dinqo_game_invite',

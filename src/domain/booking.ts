@@ -61,6 +61,7 @@ export class Booking {
     jobs.on('payment_reminder', (p) => this.paymentReminder(p.registrationId));
     jobs.on('expire_offer', (p) => this.expireOffer(p.registrationId));
     jobs.on('issue_refund', (p) => this.issueRefund(p.refundId));
+    jobs.on('transfer_payment', (p) => this.transferPayment(p.paymentId));
     jobs.on('event_reminder', (p) => this.sendReminders(p.eventId));
     jobs.on('complete_event', (p) => this.completeEvent(p.eventId));
   }
@@ -98,7 +99,10 @@ export class Booking {
     );
     if (!member) return false;
     if (event.visibility === 'members') return true;
-    return !!this.db.get('SELECT 1 FROM invitations WHERE event_id = ? AND player_id = ?', event.id, playerId);
+    // A skipped invitation (no consent, weekly cap) was never delivered, so it doesn't count.
+    return !!this.db.get(
+      `SELECT 1 FROM invitations WHERE event_id = ? AND player_id = ? AND status != 'skipped'`, event.id, playerId,
+    );
   }
 
   // ------------------------------------------------------------ transitions
@@ -262,13 +266,19 @@ export class Booking {
       const pay = this.db.get('SELECT * FROM payments WHERE provider_link_id = ?', linkId);
       if (!pay) throw new BookingError(`unknown payment link ${linkId}`, 404);
       if (pay.status === 'paid') return; // duplicate webhook
-      this.db.run(
-        `UPDATE payments SET status = 'paid', provider_payment_id = ?, paid_at = ?, amount_paise = ? WHERE id = ?`,
-        providerPaymentId, iso(this.now()), amountPaise, pay.id,
-      );
-      pay.amount_paise = amountPaise;
       const reg = this.db.get('SELECT * FROM registrations WHERE id = ?', pay.registration_id)!;
       const event = this.event(reg.event_id)!;
+      const community = this.db.get('SELECT platform_fee_bps FROM communities WHERE id = ?', event.community_id)!;
+      const fee = Math.floor((amountPaise * community.platform_fee_bps) / 10_000);
+      this.db.run(
+        `UPDATE payments SET status = 'paid', provider_payment_id = ?, paid_at = ?, amount_paise = ?, platform_fee_paise = ?,
+           transfer_status = 'pending' WHERE id = ?`,
+        providerPaymentId, iso(this.now()), amountPaise, fee, pay.id,
+      );
+      pay.amount_paise = amountPaise;
+      pay.provider_payment_id = providerPaymentId;
+      pay.transfer_status = 'pending';
+      this.jobs.schedule('transfer_payment', { paymentId: pay.id }, this.now(), `transfer:${pay.id}`);
 
       if (reg.status === 'held' || reg.status === 'offered') {
         this.confirmSeat(reg, 'payment received');
@@ -458,9 +468,11 @@ export class Booking {
     const id = newId('rfd');
     this.db.run(`UPDATE payments SET refunded_paise = refunded_paise + ? WHERE id = ?`, amount, pay.id);
     pay.refunded_paise += amount;
+    // If the community's share has already been transferred, pull it back before refunding.
+    const current = this.db.get('SELECT transfer_status FROM payments WHERE id = ?', pay.id)!;
     this.db.run(
-      `INSERT INTO refunds (id, payment_id, amount_paise, status, reason, created_at) VALUES (?, ?, ?, 'pending', ?, ?)`,
-      id, pay.id, amount, reason, iso(this.now()),
+      `INSERT INTO refunds (id, payment_id, amount_paise, status, reason, reverse_transfer, created_at) VALUES (?, ?, ?, 'pending', ?, ?, ?)`,
+      id, pay.id, amount, reason, current.transfer_status === 'created' ? 1 : 0, iso(this.now()),
     );
     this.db.run(
       `INSERT INTO registration_log (registration_id, from_status, to_status, actor, note, at) VALUES (?, ?, ?, 'system', ?, ?)`,
@@ -471,12 +483,73 @@ export class Booking {
 
   private async issueRefund(refundId: string): Promise<void> {
     const r = this.db.get(
-      `SELECT rf.*, p.provider_payment_id FROM refunds rf JOIN payments p ON p.id = rf.payment_id WHERE rf.id = ?`, refundId,
+      `SELECT rf.*, p.provider_payment_id, p.transfer_id, p.transfer_paise, p.transfer_reversed_paise
+       FROM refunds rf JOIN payments p ON p.id = rf.payment_id WHERE rf.id = ?`, refundId,
     );
     if (!r || r.status !== 'pending' || r.provider_refund_id) return;
+    if (r.reverse_transfer === 1) {
+      // Refunds come out of the community's share first; anything beyond it comes from the platform fee.
+      const reverse = Math.min(r.amount_paise, r.transfer_paise - r.transfer_reversed_paise);
+      if (reverse > 0) await this.payments.reverseTransfer({ transferId: r.transfer_id, amountPaise: reverse });
+      this.db.tx(() => {
+        this.db.run(`UPDATE refunds SET reverse_transfer = 2, reversed_paise = ? WHERE id = ?`, Math.max(reverse, 0), r.id);
+        this.db.run(`UPDATE payments SET transfer_reversed_paise = transfer_reversed_paise + ? WHERE id = ?`, Math.max(reverse, 0), r.payment_id);
+      });
+    }
     const out = await this.payments.refund({ paymentId: r.provider_payment_id, amountPaise: r.amount_paise, referenceId: r.id });
     this.db.run(`UPDATE refunds SET provider_refund_id = ? WHERE id = ?`, out.refundId, r.id);
     if (out.status === 'processed') this.refundSettled(out.refundId, true);
+  }
+
+  /** Route: send the community its share of a paid game fee (price − platform fee − anything already refunded). */
+  private async transferPayment(paymentId: string): Promise<void> {
+    const p = this.db.get(
+      `SELECT p.*, c.payout_account_id, e.ends_at FROM payments p JOIN registrations r ON r.id = p.registration_id
+       JOIN events e ON e.id = r.event_id JOIN communities c ON c.id = e.community_id WHERE p.id = ?`, paymentId,
+    );
+    if (!p || p.status !== 'paid' || !['pending', 'awaiting_account', 'failed'].includes(p.transfer_status)) return;
+    if (!p.payout_account_id) {
+      this.db.run(`UPDATE payments SET transfer_status = 'awaiting_account' WHERE id = ?`, p.id);
+      return;
+    }
+    const amount = p.amount_paise - p.platform_fee_paise - p.refunded_paise;
+    if (amount <= 0) {
+      this.db.run(`UPDATE payments SET transfer_status = 'none' WHERE id = ?`, p.id);
+      return;
+    }
+    const holdUntil = new Date(new Date(p.ends_at).getTime() + 24 * 3600_000);
+    const alreadyDeducted = new Set(this.db.all('SELECT id FROM refunds WHERE payment_id = ?', p.id).map((r) => r.id));
+    let transferId: string;
+    try {
+      ({ transferId } = await this.payments.transfer({
+        paymentId: p.provider_payment_id, accountId: p.payout_account_id, amountPaise: amount, holdUntil, referenceId: p.id,
+      }));
+    } catch (e: any) {
+      if (e?.permanent) this.db.run(`UPDATE payments SET transfer_status = 'failed' WHERE id = ?`, p.id);
+      throw e;
+    }
+    this.db.tx(() => {
+      this.db.run(
+        `UPDATE payments SET transfer_status = 'created', transfer_id = ?, transfer_paise = ? WHERE id = ?`, transferId, amount, p.id,
+      );
+      // A refund raised while the transfer call was in flight was not deducted from it: mark it for reversal.
+      for (const r of this.db.all('SELECT id FROM refunds WHERE payment_id = ? AND reverse_transfer = 0', p.id)) {
+        if (!alreadyDeducted.has(r.id)) this.db.run('UPDATE refunds SET reverse_transfer = 1 WHERE id = ?', r.id);
+      }
+    });
+  }
+
+  /** Called when a community links its payout account: releases transfers that were waiting for it. */
+  releaseAwaitingTransfers(communityId: string): number {
+    const waiting = this.db.all(
+      `SELECT p.id FROM payments p JOIN registrations r ON r.id = p.registration_id JOIN events e ON e.id = r.event_id
+       WHERE e.community_id = ? AND p.transfer_status = 'awaiting_account'`, communityId,
+    );
+    for (const w of waiting) {
+      this.db.run(`UPDATE payments SET transfer_status = 'pending' WHERE id = ?`, w.id);
+      this.jobs.schedule('transfer_payment', { paymentId: w.id }, this.now(), `transfer:${w.id}`);
+    }
+    return waiting.length;
   }
 
   private refundSettled(providerRefundId: string, ok: boolean): void {

@@ -1,18 +1,26 @@
 /**
- * Seeds a local database with a DOC-like community: venues, weekly series,
- * a few regulars and guests. Run: npm run seed
+ * Seeds a local database with the pilot tenant (Dink Over Coffee) plus a second
+ * community, so multi-community routing can be tried in the simulator.
+ * Run: npm run seed
+ *
+ * Console logins (codes appear in the simulator for these numbers, and in the API response in dev):
+ *   919845000000  Dinqo platform admin (PLATFORM_ADMIN_PHONES default)
+ *   919845000100  DOC owner
  */
 import { createApp } from './app.ts';
 import { loadConfig } from './config.ts';
 
 const app = createApp(loadConfig());
 if (app.members.communities().length) {
-  console.log('Database already has a community; nothing to seed.');
+  console.log('Database already has communities; nothing to seed.');
   process.exit(0);
 }
 
+app.members.upsertPlayer('919845000000', 'Dinqo Admin');
+const docOwner = app.members.upsertPlayer('919845000100', 'Vikram (DOC)');
+
 const doc = app.members.createCommunity({
-  name: 'Dink Over Coffee', slug: 'doc',
+  name: 'Dink Over Coffee', slug: 'doc', status: 'active', ownerId: docOwner.id,
   locations: ['Jayanagar', 'JP Nagar', 'HSR Layout', 'Koramangala', 'Indiranagar'],
 });
 const playMania = app.events.createVenue({ community_id: doc.id, name: 'Play Mania', area: 'Jayanagar' });
@@ -41,7 +49,22 @@ const result = app.members.importMembers(doc.id, [
 for (const p of app.members.listMembers(doc.id)) {
   app.members.updateProfile(p.id, { preferred_slots: ['sunday_morning', 'saturday_morning'] });
 }
-const events = app.events.generateFromSeries(doc.id, 7);
-app.polls.scheduleNext(doc.id);
-console.log(`Seeded "${doc.name}" (${doc.id}): ${result.created} members, ${events.length} upcoming games.`);
+
+// A second tenant on the same number: players join it with "join smash".
+const smashOwner = app.members.upsertPlayer('919845000200', 'Anita (Smash)');
+const smash = app.members.createCommunity({
+  name: 'HSR Smash Club', slug: 'smash', status: 'active', join_policy: 'approval', ownerId: smashOwner.id,
+  locations: ['HSR Layout', 'Koramangala', 'BTM Layout'],
+});
+const smashVenue = app.events.createVenue({ community_id: smash.id, name: 'Smash Arena', area: 'HSR Layout' });
+app.events.createSeries({
+  community_id: smash.id, venue_id: smashVenue.id, title: 'Thursday Evening Doubles', weekday: 'thu', start_time: '19:30',
+  duration_minutes: 90, capacity: 8, price_paise: 25000,
+});
+
+const events = app.events.generateFromSeries(doc.id, 7).length + app.events.generateFromSeries(smash.id, 7).length;
+for (const c of [doc, smash]) app.polls.scheduleNext(c.id);
+console.log(`Seeded "${doc.name}" (join: ${app.joinLink(doc.slug)}) and "${smash.name}" (join: ${app.joinLink(smash.slug)}).`);
+console.log(`${result.created} DOC members, ${events} upcoming games.`);
+console.log('Console logins: 919845000000 (Dinqo admin), 919845000100 (DOC owner), 919845000200 (Smash owner).');
 app.db.close();

@@ -14,9 +14,11 @@ export interface TemplateMessage {
   params: string[];
   /** Quick-reply payloads, one per template button, in order. */
   buttonPayloads?: string[];
+  /** Authentication templates: the one-time code for the copy-code button. */
+  otpCode?: string;
 }
 
-export type Category = 'utility' | 'marketing' | 'service';
+export type Category = 'utility' | 'marketing' | 'authentication' | 'service';
 
 export interface OutboundEnvelope {
   session: SessionMessage;

@@ -47,6 +47,10 @@
   a { color:var(--accent); cursor:pointer; }
   dialog { border:1px solid var(--line); border-radius:12px; background:var(--card); color:var(--ink); max-width:min(720px, 94vw); width:100%; }
   dialog::backdrop { background:rgba(0,0,0,.4); }
+  .banner { border-radius:12px; padding:12px 16px; margin-bottom:16px; border:1px solid var(--warn); color:var(--ink); background:var(--card); }
+  .login { max-width:360px; margin:10vh auto; }
+  .login input { width:100%; font-size:18px; padding:10px 12px; margin:8px 0 12px; }
+  code.link { word-break:break-all; background:var(--chip); padding:2px 6px; border-radius:6px; }
   #toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:8px 14px; border-radius:8px; display:none; }
 </style>
 </head>
@@ -59,8 +63,9 @@
     <button data-tab="games">Games</button>
     <button data-tab="members">Members</button>
     <button data-tab="setup">Setup</button>
+    <button data-tab="platform" id="platformTab" hidden>Platform</button>
   </nav>
-  <span class="right row"><a href="/dev/simulator" target="_blank">WhatsApp simulator ↗</a><button class="btn ghost sm" id="logout">API key</button></span>
+  <span class="right row"><span class="muted" id="who"></span><a href="/dev/simulator" target="_blank">Simulator ↗</a><button class="btn ghost sm" id="logout">Log out</button></span>
 </header>
 <main id="view"></main>
 <dialog id="dlg"><div id="dlgBody"></div><div class="row" style="margin-top:12px"><button class="btn ghost right" onclick="dlg.close()">Close</button></div></dialog>
@@ -72,28 +77,56 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<
 const rupees = (p) => '₹' + (p / 100).toLocaleString('en-IN');
 const when = (iso) => new Date(iso).toLocaleString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
 const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
-let KEY = store.get('dinqo.key') || 'dev-admin-key';
 let CID = store.get('dinqo.community');
 let TAB = 'dashboard';
+let ME = null;
+const community = () => ME?.communities.find((c) => c.id === CID);
 
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 2600); }
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, { ...opts, headers: { Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/json', ...(opts.headers || {}) },
+  const res = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
     body: opts.body && typeof opts.body !== 'string' ? JSON.stringify(opts.body) : opts.body });
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401) { askKey(); throw new Error('unauthorised'); }
-  if (!res.ok) { toast(data.error || 'Request failed'); throw new Error(data.error); }
+  if (res.status === 401 && !path.startsWith('/auth/')) { showLogin(); throw new Error('unauthorised'); }
+  if (!res.ok) { if (path !== '/auth/me') toast(data.error || 'Request failed'); throw new Error(data.error); }
   return data;
 }
-function askKey() { const k = prompt('Organiser API key (ADMIN_API_KEY):', KEY); if (k) { KEY = k; store.set('dinqo.key', k); boot(); } }
-$('#logout').onclick = askKey;
+$('#logout').onclick = async () => { await api('/auth/logout', { method: 'POST' }); ME = null; showLogin(); };
+
+function showLogin() {
+  document.querySelector('header').style.display = 'none';
+  $('#view').innerHTML = `<div class="card login">
+    <h2>Dinqo organiser login</h2>
+    <p class="muted">We'll send a code to your WhatsApp.</p>
+    <form id="lf"><label>Mobile number<input id="lphone" inputmode="tel" placeholder="98450 12345" autocomplete="tel" required></label>
+      <button class="btn">Send code</button></form>
+    <form id="cf" hidden><label>6-digit code<input id="lcode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required></label>
+      <button class="btn">Log in</button> <a id="lback">Use a different number</a></form>
+    <p class="muted" id="lhint"></p></div>`;
+  $('#lf').onsubmit = async (e) => {
+    e.preventDefault();
+    const r = await api('/auth/request-code', { method: 'POST', body: { phone: $('#lphone').value } });
+    $('#lf').hidden = true; $('#cf').hidden = false; $('#lcode').focus();
+    $('#lhint').textContent = r.devCode ? `Dev mode: your code is ${r.devCode} (also visible in the simulator).` : 'Check WhatsApp for a message from Dinqo.';
+  };
+  $('#cf').onsubmit = async (e) => {
+    e.preventDefault();
+    await api('/auth/verify', { method: 'POST', body: { phone: $('#lphone').value, code: $('#lcode').value } });
+    boot();
+  };
+  $('#lback').onclick = () => { $('#lf').hidden = false; $('#cf').hidden = true; };
+}
 
 async function boot() {
-  const cs = await api('/api/communities');
+  try { ME = await api('/auth/me'); } catch { return showLogin(); }
+  document.querySelector('header').style.display = '';
+  $('#who').textContent = ME.player ? (ME.player.name || ME.player.phone) + (ME.platform_admin ? ' · Dinqo admin' : '') : 'API key';
+  $('#platformTab').hidden = !ME.platform_admin;
+  const cs = ME.communities;
   const sel = $('#community');
-  sel.innerHTML = cs.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('') + '<option value="__new">+ New community…</option>';
-  if (!cs.length) { CID = null; return renderSetupEmpty(); }
+  sel.innerHTML = cs.map((c) => `<option value="${c.id}">${esc(c.name)}${c.status !== 'active' ? ` (${c.status})` : ''}</option>`).join('') + '<option value="__new">+ New community…</option>';
+  if (!cs.length) { CID = null; sel.value = '__new'; return renderSetupEmpty(); }
   if (!cs.some((c) => c.id === CID)) CID = cs[0].id;
   sel.value = CID;
   render();
@@ -106,15 +139,28 @@ $('#tabs').onclick = (e) => {
   const b = e.target.closest('button'); if (!b) return;
   TAB = b.dataset.tab; document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('on', x === b)); render();
 };
-async function createCommunity() {
-  const name = prompt('Community name'); if (!name) return boot();
-  const slug = prompt('Short code players type to join (e.g. doc)', name.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 12)); if (!slug) return boot();
-  const locs = prompt('Areas offered at sign-up (comma separated)', 'Jayanagar, HSR Layout, Koramangala, Indiranagar') || '';
-  const c = await api('/api/communities', { method: 'POST', body: { name, slug, locations: locs.split(',').map((s) => s.trim()).filter(Boolean) } });
-  CID = c.id; store.set('dinqo.community', CID); boot();
+function createCommunity() {
+  $('#view').innerHTML = `<div class="card"><h2>Set up a community on Dinqo</h2>
+    <p class="muted">Your community gets a join link for the Dinqo WhatsApp number. You can set up games and import members straight away;
+    messaging players starts once the Dinqo team approves your community (usually within a day).</p>
+    <form class="stack" id="ncf">
+      <label>Community name<input name="name" required maxlength="60" placeholder="Dink Over Coffee"></label>
+      <label>Join code (players send "join &lt;code&gt;")<input name="slug" required pattern="[a-z0-9]{2,20}" placeholder="doc"></label>
+      <label>Your name<input name="owner_name" value="${esc(ME?.player?.name || '')}"></label>
+      <label>Areas offered at sign-up (comma separated)<input name="locations" value="Jayanagar, HSR Layout, Koramangala, Indiranagar"></label>
+      <label>New members<select name="join_policy"><option value="open">Join instantly</option><option value="approval">Need my approval</option></select></label>
+      <label>&nbsp;<button class="btn">Create community</button></label>
+    </form></div>`;
+  $('[name=name]').oninput = (e) => { $('[name=slug]').value = e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 12); };
+  $('#ncf').onsubmit = async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+    const c = await api('/api/communities', { method: 'POST', body: { ...f, locations: f.locations.split(',').map((s) => s.trim()).filter(Boolean) } });
+    CID = c.id; store.set('dinqo.community', CID); TAB = 'dashboard'; boot();
+  };
 }
-function renderSetupEmpty() { $('#view').innerHTML = `<div class="card"><h2>Welcome to Dinqo</h2><p>Create your first community to get started.</p><button class="btn" onclick="createCommunity()">Create community</button></div>`; }
-function render() { ({ dashboard, games, members, setup })[TAB](); }
+function renderSetupEmpty() { createCommunity(); }
+function render() { ({ dashboard, games, members, setup, platform })[TAB](); }
+async function copy(text) { try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { prompt('Copy this:', text); } }
 
 function fillBar(e) {
   const c = e.confirmed / e.capacity * 100, p = e.pending / e.capacity * 100;
@@ -124,26 +170,41 @@ function fillBar(e) {
 // ------------------------------------------------------------------ dashboard
 async function dashboard() {
   const d = await api(`/api/communities/${CID}/dashboard`);
+  const c = d.community;
   const poll = d.latest_polls[0];
+  const pending = d.pending_members ? await api(`/api/communities/${CID}/members/pending`) : [];
   $('#view').innerHTML = `
+    ${c.status === 'pending' ? `<div class="banner"><b>Awaiting Dinqo approval.</b> Set up venues, games and members now — polls and invites start once the Dinqo team approves ${esc(c.name)}.</div>` : ''}
+    ${c.status === 'suspended' ? `<div class="banner" style="border-color:var(--bad)"><b>Suspended.</b> Messaging is paused. Contact the Dinqo team.</div>` : ''}
+    <div class="card"><div class="row"><h2 style="margin:0">Join link</h2>
+      <code class="link">${esc(c.join_link)}</code><button class="btn ghost sm" id="copyJoin">Copy</button></div>
+      <p class="muted" style="margin-bottom:0">Share it in your WhatsApp group. It opens a chat with Dinqo pre-filled with <b>join ${esc(c.slug)}</b>.</p></div>
+    ${pending.length ? `<div class="card"><h2>Join requests (${pending.length})</h2><table>
+      ${pending.map((m) => `<tr><td>${esc(m.name || '—')}<br><span class="muted">${m.phone}</span></td><td>${m.skill_level || ''}</td><td class="muted">${esc(m.preferred_locations.join(', '))}</td>
+        <td><button class="btn sm" data-approve="${m.id}">Approve</button> <button class="btn ghost sm" data-reject="${m.id}">Decline</button></td></tr>`).join('')}</table></div>` : ''}
+    ${!c.payout_account_id ? `<div class="banner">Payouts aren't set up yet${d.awaiting_payout_account !== '₹0' ? ` — <b>${d.awaiting_payout_account}</b> is waiting` : ''}. The Dinqo team links your bank account (Razorpay Route); game fees are then paid out after each game.</div>` : ''}
+    
     <div class="grid">
       <div class="card stat"><b>${d.members}</b><span>members · ${d.regulars} regulars</span></div>
       <div class="card stat"><b>${d.upcoming.length}</b><span>upcoming games</span></div>
       <div class="card stat"><b>${d.attendance_rate_30d ?? '—'}${d.attendance_rate_30d != null ? '%' : ''}</b><span>attendance, 30 days</span></div>
-      <div class="card stat"><b>${d.net_revenue_30d}</b><span>net revenue, 30 days</span></div>
+      <div class="card stat"><b>${d.net_revenue_30d}</b><span>net collected, 30 days · ${d.paid_out_30d} paid out</span></div>
     </div>
     <div class="card">
-      <div class="row"><h2>Availability poll</h2><button class="btn right" id="runPoll">Send poll now</button></div>
+      <div class="row"><h2>Availability poll</h2>${c.status === 'active' ? '<button class="btn right" id="runPoll">Send poll now</button>' : ''}</div>
       <p class="muted">Next scheduled: <b>${d.next_poll_at ? when(d.next_poll_at) : 'not scheduled'}</b>.
       ${poll ? `Last round ${when(poll.sent_at)}: ${poll.responded ?? 0} responded, ${poll.not_this_week ?? 0} not this week, ${poll.awaiting ?? 0} awaiting, ${poll.skipped ?? 0} skipped.` : 'No rounds sent yet.'}</p>
     </div>
     <div class="card"><h2>Upcoming games</h2>${gamesTable(d.upcoming)}</div>
     ${d.refunds_needing_attention ? `<div class="card"><b class="s-held">${d.refunds_needing_attention} refund(s) pending or failed.</b> <a onclick="refunds()">Review</a></div>` : ''}`;
-  $('#runPoll').onclick = async () => {
+  $('#copyJoin').onclick = () => copy(c.join_link);
+  document.querySelectorAll('[data-approve]').forEach((b) => b.onclick = async () => { await api(`/api/communities/${CID}/members/${b.dataset.approve}/approve`, { method: 'POST', body: {} }); toast('Approved — they have been notified'); dashboard(); });
+  document.querySelectorAll('[data-reject]').forEach((b) => b.onclick = async () => { await api(`/api/communities/${CID}/members/${b.dataset.reject}/reject`, { method: 'POST', body: {} }); dashboard(); });
+  $('#runPoll') && ($('#runPoll').onclick = async () => {
     const r = await api(`/api/communities/${CID}/polls/run`, { method: 'POST' });
     toast(r.poll_id ? `Poll sent to ${r.sent} regulars (${r.events} games)` : 'No open games in the poll window');
     dashboard();
-  };
+  });
   bindGameLinks();
 }
 
@@ -285,7 +346,7 @@ async function history(pid) {
   const h = await api(`/api/communities/${CID}/members/${pid}/history`);
   const s = h.stats;
   $('#dlgBody').innerHTML = `<h2>${esc(h.player.name || h.player.phone)}</h2>
-    <p class="muted">${h.player.phone} · ${h.player.skill_level || 'level not set'} · invites ${h.consents.community_games ? 'on' : 'off'}</p>
+    <p class="muted">${h.player.phone} · ${h.player.skill_level || 'level not set'} · invites from this community ${h.consents.community_games ? 'on' : 'off'}</p>
     <div class="grid">
       <div class="stat"><b>${s.played}</b><span>played</span></div>
       <div class="stat"><b>${s.no_shows}</b><span>no-shows</span></div>
@@ -301,7 +362,7 @@ async function history(pid) {
 }
 
 async function refunds() {
-  const list = await api('/api/refunds');
+  const list = await api(`/api/communities/${CID}/refunds`);
   $('#dlgBody').innerHTML = `<h2>Refunds</h2><div class="scroll"><table><tr><th>Player</th><th>Game</th><th>Amount</th><th>Reason</th><th>Status</th><th></th></tr>
     ${list.map((r) => `<tr><td>${esc(r.name || r.phone)}</td><td>${esc(r.title)}</td><td>${rupees(r.amount_paise)}</td><td>${r.reason}</td><td>${r.status}</td>
       <td>${r.status === 'failed' ? `<button class="btn sm" data-retry="${r.id}">Retry</button>` : ''}</td></tr>`).join('')}</table></div>`;
@@ -311,11 +372,29 @@ async function refunds() {
 
 // ---------------------------------------------------------------------- setup
 async function setup() {
-  const [c, venues, series] = await Promise.all([api(`/api/communities/${CID}`), api(`/api/communities/${CID}/venues`), api(`/api/communities/${CID}/series`)]);
-  const days = JSON.parse(c.poll_days);
+  const [c, venues, series, staff] = await Promise.all([api(`/api/communities/${CID}`), api(`/api/communities/${CID}/venues`), api(`/api/communities/${CID}/series`), api(`/api/communities/${CID}/staff`)]);
+  const days = c.poll_days;
+  const isOwner = community()?.role === 'owner' || ME.platform_admin;
   const dayNames = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
   const venueOpts = venues.map((v) => `<option value="${v.id}">${esc(v.name)}${v.area ? ' — ' + esc(v.area) : ''}</option>`).join('');
   $('#view').innerHTML = `
+    <div class="card"><h2>Community</h2>
+      <form class="stack" id="comForm">
+        <label>Name<input name="name" value="${esc(c.name)}" ${isOwner ? '' : 'disabled'}></label>
+        <label>Join code<input value="${esc(c.slug)}" disabled></label>
+        <label>Areas offered at sign-up<input name="locations" value="${esc(c.locations.join(', '))}" ${isOwner ? '' : 'disabled'}></label>
+        <label>New members<select name="join_policy" ${isOwner ? '' : 'disabled'}><option value="open" ${c.join_policy === 'open' ? 'selected' : ''}>Join instantly</option><option value="approval" ${c.join_policy === 'approval' ? 'selected' : ''}>Need approval</option></select></label>
+        ${isOwner ? '<label>&nbsp;<button class="btn">Save</button></label>' : ''}
+      </form>
+      <p class="muted">Status: <b>${c.status}</b> · Payouts: <b>${c.payout_account_id ? 'linked' : 'not set up'}</b>${c.platform_fee_bps ? ` · Dinqo fee ${c.platform_fee_bps / 100}%` : ''}</p>
+    </div>
+    <div class="card"><h2>Organisers</h2>
+      <table>${staff.map((m) => `<tr><td>${esc(m.name || '—')}</td><td class="muted">${m.phone}</td><td>${m.role}</td>
+        <td>${isOwner ? `<button class="btn ghost sm" data-unstaff="${m.player_id}">Remove</button>` : ''}</td></tr>`).join('')}</table>
+      ${isOwner ? `<form class="row" id="staffForm" style="margin-top:8px"><input name="name" placeholder="Name"><input name="phone" placeholder="Mobile number" required>
+        <select name="role"><option value="organiser">Organiser</option><option value="owner">Owner</option></select><button class="btn">Add</button></form>
+        <p class="muted">They log in here with a WhatsApp code sent to that number.</p>` : ''}
+    </div>
     <div class="card"><h2>Availability poll</h2>
       <p class="muted">Regular members get a WhatsApp message on these days listing the week's games. Tapping a game holds their spot.</p>
       <div class="row">${dayNames.map((d) => `<label class="row"><input type="checkbox" name="pd" value="${d}" ${days.includes(d) ? 'checked' : ''}>${d}</label>`).join('')}
@@ -362,6 +441,19 @@ async function setup() {
       <p>${venues.map((v) => `<span class="chip">${esc(v.name)}${v.area ? ' · ' + esc(v.area) : ''}</span>`).join(' ') || '<span class="muted">None yet.</span>'}</p>
       <form class="row" id="venueForm"><input name="name" placeholder="Venue name" required><input name="area" placeholder="Area (e.g. Jayanagar)"><button class="btn">Add venue</button></form>
     </div>`;
+  $('#comForm').onsubmit = async (ev) => {
+    ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target));
+    await api(`/api/communities/${CID}`, { method: 'PATCH', body: { name: f.name, join_policy: f.join_policy, locations: f.locations.split(',').map((x) => x.trim()).filter(Boolean) } });
+    toast('Saved'); boot();
+  };
+  $('#staffForm') && ($('#staffForm').onsubmit = async (ev) => {
+    ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target));
+    await api(`/api/communities/${CID}/staff`, { method: 'POST', body: f }); toast('Organiser added'); setup();
+  });
+  document.querySelectorAll('[data-unstaff]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Remove this organiser?')) return;
+    await api(`/api/communities/${CID}/staff/${b.dataset.unstaff}`, { method: 'DELETE', body: {} }); setup();
+  });
   $('#savePoll').onclick = async () => {
     await api(`/api/communities/${CID}/poll-settings`, { method: 'PATCH', body: {
       poll_days: [...document.querySelectorAll('input[name=pd]:checked')].map((x) => x.value),
@@ -393,6 +485,27 @@ async function setup() {
     ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target));
     await api(`/api/communities/${CID}/venues`, { method: 'POST', body: f }); setup();
   };
+}
+
+// ------------------------------------------------------------------- platform
+async function platform() {
+  const list = await api('/api/admin/communities');
+  $('#view').innerHTML = `<div class="card"><h2>Communities on Dinqo (${list.length})</h2><div class="scroll"><table>
+    <tr><th>Community</th><th>Owners</th><th>Members</th><th>Invites sent</th><th>Status</th><th>Payout account</th><th>Fee %</th><th></th></tr>
+    ${list.map((c) => `<tr data-row="${c.id}">
+      <td><b>${esc(c.name)}</b><br><span class="muted">join ${esc(c.slug)} · ${when(c.created_at)}</span></td>
+      <td class="muted">${esc(c.owners || '—')}</td><td>${c.members}</td><td>${c.marketing_sent}</td>
+      <td><select data-f="status">${['pending', 'active', 'suspended'].map((s) => `<option ${c.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></td>
+      <td><input data-f="payout_account_id" value="${esc(c.payout_account_id || '')}" placeholder="acc_…" style="width:150px"></td>
+      <td><input data-f="fee" type="number" min="0" max="50" step="0.1" value="${c.platform_fee_bps / 100}" style="width:70px"></td>
+      <td><button class="btn sm" data-save="${c.id}">Save</button></td></tr>`).join('')}
+  </table></div><p class="muted">Approve (status active) only after checking the organiser is real — every community shares the Dinqo number's quality rating.</p></div>`;
+  document.querySelectorAll('[data-save]').forEach((b) => b.onclick = async () => {
+    const row = b.closest('tr'); const v = (f) => row.querySelector(`[data-f=${f}]`).value;
+    await api(`/api/communities/${b.dataset.save}`, { method: 'PATCH', body: {
+      status: v('status'), payout_account_id: v('payout_account_id').trim(), platform_fee_bps: Math.round(Number(v('fee')) * 100) } });
+    toast('Saved'); ME = await api('/auth/me');
+  });
 }
 
 boot();

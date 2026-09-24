@@ -11,6 +11,7 @@ export class FakePaymentProvider implements PaymentProvider {
   readonly name = 'fake';
   readonly links = new Map<string, { amountPaise: number; description: string; status: 'created' | 'paid' | 'cancelled' }>();
   readonly refunds: { refundId: string; paymentId: string; amountPaise: number }[] = [];
+  readonly transfers: { transferId: string; paymentId: string; accountId: string; amountPaise: number; reversedPaise: number }[] = [];
   failNextRefund = false;
 
   constructor(private readonly baseUrl: string, private readonly webhookSecret: string) {}
@@ -34,6 +35,18 @@ export class FakePaymentProvider implements PaymentProvider {
     const refundId = newId('rfnd');
     this.refunds.push({ refundId, paymentId: i.paymentId, amountPaise: i.amountPaise });
     return { refundId, status: 'processed' as const };
+  }
+
+  async transfer(i: { paymentId: string; accountId: string; amountPaise: number }) {
+    const transferId = newId('trf');
+    this.transfers.push({ transferId, paymentId: i.paymentId, accountId: i.accountId, amountPaise: i.amountPaise, reversedPaise: 0 });
+    return { transferId };
+  }
+
+  async reverseTransfer(i: { transferId: string; amountPaise: number }) {
+    const t = this.transfers.find((x) => x.transferId === i.transferId);
+    if (!t || t.reversedPaise + i.amountPaise > t.amountPaise) throw Object.assign(new Error('invalid reversal'), { permanent: true });
+    t.reversedPaise += i.amountPaise;
   }
 
   /** Builds the signed webhook Razorpay would send when a link is paid. */

@@ -92,6 +92,7 @@ export class Polls {
   run(communityId: string): { poll_id: string | null; events: number; sent: number; skipped: number } {
     const c = this.db.get('SELECT * FROM communities WHERE id = ?', communityId);
     if (!c) throw new Error('community not found');
+    if (c.status !== 'active') return { poll_id: null, events: 0, sent: 0, skipped: 0 };
     this.events.generateFromSeries(communityId, c.poll_horizon_days);
     const events = this.pollableEvents(communityId);
     if (!events.length) return { poll_id: null, events: 0, sent: 0, skipped: 0 };
@@ -125,7 +126,7 @@ export class Polls {
           );
         }
         const d = this.outbox.send({
-          playerId: p.id, category: 'marketing', purpose: 'community_games', idempotencyKey: `poll:${pollId}:${p.id}`,
+          playerId: p.id, communityId, category: 'marketing', purpose: 'community_games', idempotencyKey: `poll:${pollId}:${p.id}`,
           envelope: {
             session: this.listMessage(pending, c.name, p.name),
             template: {
@@ -184,7 +185,7 @@ export class Polls {
     }
     const visible = pending.filter((e) => this.booking.isEligible(e, playerId));
     if (!visible.length) return false;
-    this.outbox.reply(playerId, this.listMessage(visible, c.name, p.name, followUp));
+    this.outbox.reply(playerId, this.listMessage(visible, c.name, p.name, followUp), communityId);
     return true;
   }
 

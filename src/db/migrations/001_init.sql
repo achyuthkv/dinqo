@@ -1,12 +1,19 @@
--- Dinqo Phase 1 schema.
+-- Dinqo schema, baseline. Later changes go in 002_*.sql, 003_*.sql, ...
+-- Multi-tenant: one shared Dinqo WhatsApp number, many communities.
 -- Conventions: ids are prefixed text ids, timestamps are UTC ISO-8601 strings,
 -- money is integer paise. JSON columns hold small arrays/objects only.
 
 CREATE TABLE IF NOT EXISTS communities (
   id            TEXT PRIMARY KEY,
   name          TEXT NOT NULL,
-  slug          TEXT NOT NULL UNIQUE,
+  slug          TEXT NOT NULL UNIQUE,         -- join code: players send "join <slug>"
   timezone      TEXT NOT NULL DEFAULT 'Asia/Kolkata',
+  -- pending: set up but cannot message players until the platform approves it
+  status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','suspended')),
+  join_policy   TEXT NOT NULL DEFAULT 'open' CHECK (join_policy IN ('open','approval')),
+  -- Razorpay Route linked account that receives this community's game fees
+  payout_account_id  TEXT,
+  platform_fee_bps   INTEGER NOT NULL DEFAULT 0 CHECK (platform_fee_bps BETWEEN 0 AND 5000),
   locations     TEXT NOT NULL DEFAULT '[]',   -- areas offered during onboarding
   -- Availability poll: sent to regulars on these weekdays at poll_time (community-local).
   poll_enabled       INTEGER NOT NULL DEFAULT 1,
@@ -34,8 +41,7 @@ CREATE TABLE IF NOT EXISTS memberships (
   community_id   TEXT NOT NULL REFERENCES communities(id),
   player_id      TEXT NOT NULL REFERENCES players(id),
   status         TEXT NOT NULL DEFAULT 'pending'
-                 CHECK (status IN ('pending','active','removed')),
-  role           TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('member','organiser')),
+                 CHECK (status IN ('pending','requested','active','removed')),
   -- regulars get the Mon/Wed availability poll; guests are invited to fill open slots
   tier           TEXT NOT NULL DEFAULT 'guest' CHECK (tier IN ('regular','guest')),
   source         TEXT NOT NULL DEFAULT 'whatsapp' CHECK (source IN ('whatsapp','import','organiser')),
@@ -43,15 +49,45 @@ CREATE TABLE IF NOT EXISTS memberships (
   PRIMARY KEY (community_id, player_id)
 );
 
--- Purpose-based consent. One row per (player, purpose); revocation keeps the row.
+-- Purpose-based consent, per community (community_id '' = platform-wide purposes
+-- such as tournaments). Revocation keeps the row.
 CREATE TABLE IF NOT EXISTS consents (
   player_id       TEXT NOT NULL REFERENCES players(id),
+  community_id    TEXT NOT NULL DEFAULT '',
   purpose         TEXT NOT NULL CHECK (purpose IN ('community_games','tournaments','venue_events','coaching','brands')),
   granted         INTEGER NOT NULL,
   source          TEXT NOT NULL,
   policy_version  TEXT NOT NULL,
   updated_at      TEXT NOT NULL,
-  PRIMARY KEY (player_id, purpose)
+  PRIMARY KEY (player_id, community_id, purpose)
+);
+
+-- People who run a community. Identity is the player (phone), so an organiser
+-- can also play, and logs in to the console with a WhatsApp OTP.
+CREATE TABLE IF NOT EXISTS community_staff (
+  community_id  TEXT NOT NULL REFERENCES communities(id),
+  player_id     TEXT NOT NULL REFERENCES players(id),
+  role          TEXT NOT NULL CHECK (role IN ('owner','organiser')),
+  added_at      TEXT NOT NULL,
+  PRIMARY KEY (community_id, player_id)
+);
+
+CREATE TABLE IF NOT EXISTS login_codes (
+  id           TEXT PRIMARY KEY,
+  phone        TEXT NOT NULL,
+  code_hash    TEXT NOT NULL,
+  attempts     INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL,
+  expires_at   TEXT NOT NULL,
+  used_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS login_codes_phone ON login_codes(phone, created_at);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash   TEXT PRIMARY KEY,
+  player_id    TEXT NOT NULL REFERENCES players(id),
+  created_at   TEXT NOT NULL,
+  expires_at   TEXT NOT NULL
 );
 
 -- Bot conversation state (onboarding steps, pending choices).
@@ -187,6 +223,13 @@ CREATE TABLE IF NOT EXISTS payments (
   amount_paise          INTEGER NOT NULL,
   refunded_paise        INTEGER NOT NULL DEFAULT 0,
   status                TEXT NOT NULL CHECK (status IN ('created','paid','expired','cancelled')),
+  -- Razorpay Route: community share is transferred to its linked account, platform keeps the fee
+  platform_fee_paise    INTEGER NOT NULL DEFAULT 0,
+  transfer_status       TEXT NOT NULL DEFAULT 'none'
+                        CHECK (transfer_status IN ('none','awaiting_account','pending','created','failed')),
+  transfer_id           TEXT,
+  transfer_paise        INTEGER NOT NULL DEFAULT 0,
+  transfer_reversed_paise INTEGER NOT NULL DEFAULT 0,
   created_at            TEXT NOT NULL,
   paid_at               TEXT
 );
@@ -199,6 +242,9 @@ CREATE TABLE IF NOT EXISTS refunds (
   amount_paise        INTEGER NOT NULL CHECK (amount_paise > 0),
   status              TEXT NOT NULL CHECK (status IN ('pending','processed','failed')),
   reason              TEXT NOT NULL,
+  -- 1 = the community's transfer must be reversed before refunding; 2 = reversal done
+  reverse_transfer    INTEGER NOT NULL DEFAULT 0,
+  reversed_paise      INTEGER NOT NULL DEFAULT 0,
   created_at          TEXT NOT NULL,
   processed_at        TEXT
 );
@@ -207,6 +253,7 @@ CREATE TABLE IF NOT EXISTS refunds (
 CREATE TABLE IF NOT EXISTS messages (
   id                   TEXT PRIMARY KEY,
   player_id            TEXT REFERENCES players(id),
+  community_id         TEXT,                 -- tenant attribution for cost and quality
   direction            TEXT NOT NULL CHECK (direction IN ('in','out')),
   kind                 TEXT NOT NULL,        -- text | interactive | template | button | ...
   template_name        TEXT,

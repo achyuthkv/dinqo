@@ -3,7 +3,7 @@ import { createHmac } from 'node:crypto';
 import { test } from 'node:test';
 import { createApp } from '../src/app.ts';
 import { loadConfig } from '../src/config.ts';
-import { buildServer, parseCsv } from '../src/http/server.ts';
+import { parseCsv } from '../src/http/server.ts';
 import { ConsoleProvider } from '../src/messaging/console-provider.ts';
 import { parseCloudWebhook, toCloudPayload } from '../src/messaging/whatsapp-cloud.ts';
 import { FakePaymentProvider } from '../src/payments/fake.ts';
@@ -15,7 +15,7 @@ test('Meta webhook: signature is verified and payload is parsed', async () => {
   const app = createApp(loadConfig({ databasePath: ':memory:', whatsapp: { appSecret: 'meta-secret' } as any }), {
     clock: new ManualClock(), messaging: wa, payments: new FakePaymentProvider('http://t', 's'),
   });
-  app.members.createCommunity({ name: 'DOC', slug: 'doc' });
+  app.members.createCommunity({ name: 'DOC', slug: 'doc', status: 'active' });
   const body = Buffer.from(JSON.stringify({
     entry: [{ changes: [{ value: {
       contacts: [{ wa_id: '919812345678', profile: { name: 'Meera' } }],
@@ -57,44 +57,4 @@ test('payment webhooks with a bad signature are rejected', async () => {
 test('CSV import parsing', () => {
   const rows = parseCsv('phone,name,skill_level,tier,opted_in,preferred_locations\n98450 12345,"Rao, K",Intermediate,regular,yes,Jayanagar;HSR\n');
   assert.deepEqual(rows[0], { phone: '98450 12345', name: 'Rao, K', skill_level: 'intermediate', tier: 'regular', opted_in: true, preferred_locations: ['Jayanagar', 'HSR'] });
-});
-
-test('HTTP API: auth, create event, simulator round-trip', async () => {
-  const app = createApp(loadConfig({ databasePath: ':memory:', adminApiKey: 'k', devTools: true }), {
-    messaging: new ConsoleProvider(), payments: new FakePaymentProvider('http://t', 'dev-webhook-secret'),
-  });
-  const server = buildServer(app);
-  await new Promise<void>((r) => server.listen(0, r));
-  const base = `http://127.0.0.1:${(server.address() as any).port}`;
-  const api = (path: string, init: RequestInit = {}) => fetch(base + path, {
-    ...init, headers: { Authorization: 'Bearer k', 'Content-Type': 'application/json', ...(init.headers ?? {}) },
-  });
-  try {
-    assert.equal((await fetch(base + '/api/communities')).status, 401);
-    const c = await (await api('/api/communities', { method: 'POST', body: JSON.stringify({ name: 'DOC', slug: 'doc' }) })).json();
-    const starts = new Date(Date.now() + 3 * 86400_000);
-    const evRes = await api(`/api/communities/${c.id}/events`, { method: 'POST', body: JSON.stringify({
-      title: 'Test', starts_at: starts.toISOString(), ends_at: new Date(starts.getTime() + 7200_000).toISOString(), capacity: 4, price_paise: 0,
-    }) });
-    assert.equal(evRes.status, 200);
-    const bad = await api(`/api/communities/${c.id}/events`, { method: 'POST', body: JSON.stringify({ title: 'x', capacity: 0 }) });
-    assert.equal(bad.status, 400);
-
-    await fetch(base + '/dev/inbound', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from: '9845099999', name: 'Sim', text: 'hi' }) });
-    const conv = await (await fetch(base + '/dev/conversation?phone=9845099999')).json();
-    assert.equal(conv.length, 2);
-    assert.equal(conv[1].direction, 'out');
-
-    const imp = await fetch(`${base}/api/communities/${c.id}/members/import`, {
-      method: 'POST', headers: { Authorization: 'Bearer k', 'Content-Type': 'text/csv' },
-      body: 'phone,name,tier,opted_in\n9845011111,Asha,regular,yes\nbad,Nope,,\n',
-    });
-    const impBody = await imp.json();
-    assert.equal(impBody.created, 1);
-    assert.equal(impBody.errors.length, 1);
-    const dash = await (await api(`/api/communities/${c.id}/dashboard`)).json();
-    assert.equal(dash.upcoming.length, 1);
-  } finally {
-    server.close();
-  }
 });

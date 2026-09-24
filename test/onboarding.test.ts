@@ -7,6 +7,8 @@ const PHONE = '919845011111';
 test('a new number registers as a member over WhatsApp', async () => {
   const h = await harness();
   await h.say(PHONE, 'hi', 'Ananya');
+  assert.match(h.last(PHONE).text, /send \*join\* followed by the community code/, 'shared number: no community guessed');
+  await h.say(PHONE, 'join doc', 'Ananya');
   assert.match(h.last(PHONE).text, /Welcome to \*Dink Over Coffee\*/);
   assert.equal(h.last(PHONE).buttons[0].id, 'onb:name:profile');
 
@@ -29,7 +31,7 @@ test('a new number registers as a member over WhatsApp', async () => {
   const m = h.app.members.membership(h.community.id, p.id)!;
   assert.equal(m.status, 'active');
   assert.equal(m.tier, 'guest', 'self-registered members start as guests');
-  assert.equal(h.app.members.consents(p.id).community_games, true);
+  assert.equal(h.app.members.consents(p.id, h.community.id).community_games, true);
   assert.equal(h.last(PHONE).kind, 'list', 'ends on the main menu');
 });
 
@@ -37,12 +39,12 @@ test('STOP revokes invite consent and START restores it', async () => {
   const h = await harness();
   const id = h.member(PHONE, 'Ravi');
   await h.say(PHONE, 'STOP');
-  assert.equal(h.app.members.consents(id).community_games, false);
+  assert.equal(h.app.members.consents(id, h.community.id).community_games, false);
   const e = h.event();
   const [out] = h.app.events.invite(e.id, [id]);
   assert.deepEqual(out, { player_id: id, status: 'skipped', reason: 'no_consent' });
   await h.say(PHONE, 'start');
-  assert.equal(h.app.members.consents(id).community_games, true);
+  assert.equal(h.app.members.consents(id, h.community.id).community_games, true);
 });
 
 test('duplicate inbound webhooks are processed once', async () => {

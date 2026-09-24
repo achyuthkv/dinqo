@@ -64,8 +64,9 @@ export function memberHistory(db: Db, clock: Clock, playerId: string, communityI
 /** Upcoming games a player holds or is queued for — used by the WhatsApp "My games" menu. */
 export function upcomingForPlayer(db: Db, clock: Clock, playerId: string): Row[] {
   return db.all(
-    `SELECT e.id AS event_id, e.title, e.starts_at, e.ends_at, r.status, r.expires_at, v.name AS venue
-     FROM registrations r JOIN events e ON e.id = r.event_id LEFT JOIN venues v ON v.id = e.venue_id
+    `SELECT e.id AS event_id, e.community_id, c.name AS community, e.title, e.starts_at, e.ends_at, r.status, r.expires_at, v.name AS venue
+     FROM registrations r JOIN events e ON e.id = r.event_id JOIN communities c ON c.id = e.community_id
+     LEFT JOIN venues v ON v.id = e.venue_id
      WHERE r.player_id = ? AND r.status IN ('waitlisted','offered','held','confirmed')
        AND e.status = 'open' AND e.starts_at > ?
      ORDER BY e.starts_at`,

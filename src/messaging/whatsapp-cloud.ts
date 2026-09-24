@@ -41,6 +41,9 @@ export function toCloudPayload(req: SendRequest): Record<string, unknown> {
     if (t.params.length) {
       components.push({ type: 'body', parameters: t.params.map((text) => ({ type: 'text', text })) });
     }
+    if (t.otpCode) {
+      components.push({ type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: t.otpCode }] });
+    }
     (t.buttonPayloads ?? []).forEach((payload, i) =>
       components.push({ type: 'button', sub_type: 'quick_reply', index: String(i), parameters: [{ type: 'payload', payload }] }),
     );

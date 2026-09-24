@@ -61,6 +61,26 @@ export class RazorpayProvider implements PaymentProvider {
     return { refundId: r.id as string, status: r.status === 'processed' ? 'processed' as const : 'pending' as const };
   }
 
+  async transfer(i: { paymentId: string; accountId: string; amountPaise: number; holdUntil: Date; referenceId: string }) {
+    const r = await this.call('POST', `/payments/${i.paymentId}/transfers`, {
+      transfers: [{
+        account: i.accountId,
+        amount: i.amountPaise,
+        currency: 'INR',
+        notes: { reference_id: i.referenceId },
+        // Held until the game is over, so cancellations can still be reversed before settlement.
+        on_hold: true,
+        on_hold_until: Math.floor(i.holdUntil.getTime() / 1000),
+      }],
+    });
+    const t = r.items?.[0] ?? r;
+    return { transferId: t.id as string };
+  }
+
+  async reverseTransfer(i: { transferId: string; amountPaise: number }) {
+    await this.call('POST', `/transfers/${i.transferId}/reversals`, { amount: i.amountPaise });
+  }
+
   parseWebhook(rawBody: Buffer, headers: Record<string, string | string[] | undefined>): PaymentEvent[] {
     const sig = String(headers['x-razorpay-signature'] ?? '');
     const expected = createHmac('sha256', this.cfg.webhookSecret).update(rawBody).digest('hex');

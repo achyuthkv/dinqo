@@ -36,7 +36,7 @@ export async function harness(start = START): Promise<Harness> {
     loadConfig({ databasePath: ':memory:', payments: { webhookSecret: 'whsec' } as any, weeklyInviteCap: 6 }),
     { clock, messaging: wa, payments: pay },
   );
-  const community = app.members.createCommunity({ name: 'Dink Over Coffee', slug: 'doc', locations: ['Jayanagar', 'HSR Layout'] });
+  const community = app.members.createCommunity({ name: 'Dink Over Coffee', slug: 'doc', status: 'active', locations: ['Jayanagar', 'HSR Layout'] });
   const venue = app.events.createVenue({ community_id: community.id, name: 'Play Mania', area: 'Jayanagar' });
 
   const inbound = async (phone: string, m: { text?: string; payload?: string; name?: string }) => {

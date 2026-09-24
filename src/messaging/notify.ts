@@ -18,6 +18,7 @@ export const Actions = {
 
 export interface EventView {
   id: string;
+  communityId: string;
   title: string;
   community: string;
   venue: string;
@@ -36,6 +37,7 @@ export function loadEventView(db: Db, eventId: string): EventView {
   if (!e) throw new Error(`event ${eventId} not found`);
   return {
     id: e.id,
+    communityId: e.community_id,
     title: e.title,
     community: e.community,
     venue: [e.venue_name, e.venue_area].filter(Boolean).join(', ') || 'Venue TBA',
@@ -62,7 +64,7 @@ export class Notifier {
   invite(playerId: string, eventId: string): SendDecision {
     const e = loadEventView(this.db, eventId);
     return this.outbox.send({
-      playerId, eventId, category: 'marketing', purpose: 'community_games',
+      playerId, eventId, communityId: e.communityId, category: 'marketing', purpose: 'community_games',
       idempotencyKey: `invite:${eventId}:${playerId}`,
       envelope: {
         session: {
@@ -79,10 +81,21 @@ export class Notifier {
     });
   }
 
+  membershipApproved(playerId: string, communityId: string): void {
+    const c = this.db.get('SELECT name FROM communities WHERE id = ?', communityId)!;
+    this.outbox.send({
+      playerId, communityId, category: 'utility', idempotencyKey: `approved:${communityId}:${playerId}`,
+      envelope: {
+        session: { kind: 'text', text: `You're in! 🎉 *${c.name}* has approved your membership. Reply *menu* anytime to see games and your bookings.` },
+        template: { name: 'dinqo_membership_approved', params: [c.name] },
+      },
+    });
+  }
+
   paymentLink(playerId: string, eventId: string, url: string, heldUntil: string, amountPaise: number, key: string): void {
     const e = loadEventView(this.db, eventId);
     this.outbox.send({
-      playerId, eventId, category: 'utility', idempotencyKey: key,
+      playerId, eventId, communityId: e.communityId, category: 'utility', idempotencyKey: key,
       envelope: {
         session: {
           kind: 'cta_url',
@@ -99,7 +112,7 @@ export class Notifier {
   confirmed(playerId: string, eventId: string, key: string): void {
     const e = loadEventView(this.db, eventId);
     this.outbox.send({
-      playerId, eventId, category: 'utility', idempotencyKey: key,
+      playerId, eventId, communityId: e.communityId, category: 'utility', idempotencyKey: key,
       envelope: {
         session: {
           kind: 'buttons',
@@ -114,7 +127,7 @@ export class Notifier {
   holdExpired(playerId: string, eventId: string, key: string): void {
     const e = loadEventView(this.db, eventId);
     this.outbox.send({
-      playerId, eventId, category: 'utility', idempotencyKey: key,
+      playerId, eventId, communityId: e.communityId, category: 'utility', idempotencyKey: key,
       envelope: {
         session: {
           kind: 'buttons',
@@ -129,7 +142,7 @@ export class Notifier {
   waitlistOffer(playerId: string, eventId: string, until: string, key: string): void {
     const e = loadEventView(this.db, eventId);
     this.outbox.send({
-      playerId, eventId, category: 'utility', idempotencyKey: key,
+      playerId, eventId, communityId: e.communityId, category: 'utility', idempotencyKey: key,
       envelope: {
         session: {
           kind: 'buttons',
@@ -148,7 +161,7 @@ export class Notifier {
   offerExpired(playerId: string, eventId: string, key: string): void {
     const e = loadEventView(this.db, eventId);
     this.outbox.send({
-      playerId, eventId, category: 'utility', idempotencyKey: key,
+      playerId, eventId, communityId: e.communityId, category: 'utility', idempotencyKey: key,
       envelope: {
         session: { kind: 'text', text: `The spot we held for you for *${e.title}* has been passed to the next player on the waitlist.` },
         template: { name: 'dinqo_cancellation_update', params: [e.title, day(e.starts_at), 'The offered spot expired and was passed on.'] },
@@ -159,7 +172,7 @@ export class Notifier {
   reminder(playerId: string, eventId: string): void {
     const e = loadEventView(this.db, eventId);
     this.outbox.send({
-      playerId, eventId, category: 'utility', idempotencyKey: `reminder:${eventId}:${playerId}`,
+      playerId, eventId, communityId: e.communityId, category: 'utility', idempotencyKey: `reminder:${eventId}:${playerId}`,
       envelope: {
         session: {
           kind: 'buttons',
@@ -178,7 +191,7 @@ export class Notifier {
   paymentReminder(playerId: string, eventId: string, url: string, heldUntil: string, amountPaise: number, key: string): void {
     const e = loadEventView(this.db, eventId);
     this.outbox.send({
-      playerId, eventId, category: 'utility', idempotencyKey: key,
+      playerId, eventId, communityId: e.communityId, category: 'utility', idempotencyKey: key,
       envelope: {
         session: {
           kind: 'cta_url',
@@ -194,7 +207,7 @@ export class Notifier {
   cancelled(playerId: string, eventId: string, refundNote: string, key: string): void {
     const e = loadEventView(this.db, eventId);
     this.outbox.send({
-      playerId, eventId, category: 'utility', idempotencyKey: key,
+      playerId, eventId, communityId: e.communityId, category: 'utility', idempotencyKey: key,
       envelope: {
         session: { kind: 'text', text: `Your registration for *${e.title}* (${day(e.starts_at)}) is cancelled. ${refundNote}`.trim() },
         template: { name: 'dinqo_cancellation_update', params: [e.title, day(e.starts_at), refundNote || 'No payment was taken.'] },
@@ -205,7 +218,7 @@ export class Notifier {
   eventCancelled(playerId: string, eventId: string, refundNote: string): void {
     const e = loadEventView(this.db, eventId);
     this.outbox.send({
-      playerId, eventId, category: 'utility', idempotencyKey: `event-cancelled:${eventId}:${playerId}`,
+      playerId, eventId, communityId: e.communityId, category: 'utility', idempotencyKey: `event-cancelled:${eventId}:${playerId}`,
       envelope: {
         session: { kind: 'text', text: `Sorry — *${e.title}* on ${day(e.starts_at)} has been cancelled by the organiser. ${refundNote}`.trim() },
         template: { name: 'dinqo_event_cancelled', params: [e.title, day(e.starts_at), refundNote || 'No payment was taken.'] },
@@ -216,7 +229,7 @@ export class Notifier {
   refundUpdate(playerId: string, eventId: string, text: string, key: string): void {
     const e = loadEventView(this.db, eventId);
     this.outbox.send({
-      playerId, eventId, category: 'utility', idempotencyKey: key,
+      playerId, eventId, communityId: e.communityId, category: 'utility', idempotencyKey: key,
       envelope: {
         session: { kind: 'text', text: `💸 Refund update for *${e.title}*: ${text}` },
         template: { name: 'dinqo_refund_update', params: [e.title, text] },

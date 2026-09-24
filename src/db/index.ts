@@ -1,5 +1,5 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import { readFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 export type Row = Record<string, any>;
@@ -20,9 +20,20 @@ export class Db {
     this.raw.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   }
 
+  /** Applies migrations/NNN_*.sql in order, tracking progress in PRAGMA user_version. */
   migrate(): void {
-    const sql = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
-    this.raw.exec(sql);
+    const dir = new URL('./migrations/', import.meta.url);
+    const files = readdirSync(dir).filter((f) => /^\d{3}_.*\.sql$/.test(f)).sort();
+    let version = Number(this.get<{ user_version: number }>('PRAGMA user_version')!.user_version);
+    for (const f of files) {
+      const n = Number(f.slice(0, 3));
+      if (n <= version) continue;
+      this.tx(() => {
+        this.raw.exec(readFileSync(new URL(f, dir), 'utf8'));
+        this.raw.exec(`PRAGMA user_version = ${n}`);
+      });
+      version = n;
+    }
   }
 
   get<T = Row>(sql: string, ...params: Params): T | undefined {

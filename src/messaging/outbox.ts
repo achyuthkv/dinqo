@@ -9,6 +9,8 @@ export type Purpose = 'community_games' | 'tournaments' | 'venue_events' | 'coac
 
 export interface SendOptions {
   playerId: string;
+  /** Tenant the message is sent on behalf of. Required for marketing (consent is per community). */
+  communityId?: string | null;
   envelope: OutboundEnvelope;
   /** Marketing sends need purpose consent and count toward the weekly cap. */
   category: Category;
@@ -20,7 +22,7 @@ export interface SendOptions {
 
 export type SendDecision =
   | { ok: true; messageId: string; duplicate?: boolean }
-  | { ok: false; reason: 'blocked' | 'no_consent' | 'frequency_cap' | 'no_template' };
+  | { ok: false; reason: 'blocked' | 'no_consent' | 'frequency_cap' | 'no_template' | 'community_inactive' };
 
 // Meta's window is 24h from the player's last message; keep a safety margin.
 const WINDOW_MINUTES = 24 * 60 - 10;
@@ -49,13 +51,18 @@ export class Outbox {
       if (dup) return { ok: true, messageId: dup.id, duplicate: true };
     }
     const player = this.db.get('SELECT id, blocked FROM players WHERE id = ?', o.playerId);
-    if (!player || player.blocked) return { ok: false, reason: 'blocked' };
+    if (!player || (player.blocked && o.category !== 'authentication')) return { ok: false, reason: 'blocked' };
 
     if (o.category === 'marketing') {
+      // The shared number's quality rating is everyone's, so only approved communities may promote.
+      const community = o.communityId ? this.db.get('SELECT status FROM communities WHERE id = ?', o.communityId) : null;
+      if (!community || community.status !== 'active') return { ok: false, reason: 'community_inactive' };
       const consent = this.db.get(
-        'SELECT granted FROM consents WHERE player_id = ? AND purpose = ?', o.playerId, o.purpose ?? 'community_games',
+        'SELECT granted FROM consents WHERE player_id = ? AND community_id = ? AND purpose = ?',
+        o.playerId, o.communityId!, o.purpose ?? 'community_games',
       );
       if (!consent?.granted) return { ok: false, reason: 'no_consent' };
+      // The weekly cap is across all communities: it protects the player and the shared number.
       const since = iso(addMinutes(this.clock.now(), -7 * 24 * 60));
       const recent = this.db.get<{ n: number }>(
         `SELECT COUNT(*) AS n FROM messages WHERE player_id = ? AND direction = 'out' AND category = 'marketing'
@@ -69,9 +76,9 @@ export class Outbox {
     const id = newId('msg');
     const now = iso(this.clock.now());
     this.db.run(
-      `INSERT INTO messages (id, player_id, direction, kind, template_name, category, body, status, idempotency_key, event_id, created_at, updated_at)
-       VALUES (?, ?, 'out', ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
-      id, o.playerId, o.envelope.session.kind, o.envelope.template?.name ?? null, o.category,
+      `INSERT INTO messages (id, player_id, community_id, direction, kind, template_name, category, body, status, idempotency_key, event_id, created_at, updated_at)
+       VALUES (?, ?, ?, 'out', ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+      id, o.playerId, o.communityId ?? null, o.envelope.session.kind, o.envelope.template?.name ?? null, o.category,
       JSON.stringify(o.envelope), o.idempotencyKey ?? null, o.eventId ?? null, now, now,
     );
     this.jobs.schedule('send_message', { messageId: id });
@@ -79,8 +86,8 @@ export class Outbox {
   }
 
   /** Free-form reply to something the player just sent (window is open by definition). */
-  reply(playerId: string, session: OutboundEnvelope['session']): void {
-    this.send({ playerId, envelope: { session }, category: 'service' });
+  reply(playerId: string, session: OutboundEnvelope['session'], communityId?: string | null): void {
+    this.send({ playerId, communityId, envelope: { session }, category: 'service' });
   }
 
   windowOpen(playerId: string): boolean {
@@ -100,7 +107,7 @@ export class Outbox {
          kind = COALESCE(?, kind), updated_at = ? WHERE id = ?`,
         status, extra.error ?? null, extra.providerId ?? null, extra.kind ?? null, iso(this.clock.now()), messageId,
       );
-    if (m.blocked) return void setStatus('blocked', { error: 'player blocked' });
+    if (m.blocked && m.category !== 'authentication') return void setStatus('blocked', { error: 'player blocked' });
 
     const env = JSON.parse(m.body) as OutboundEnvelope;
     let form;

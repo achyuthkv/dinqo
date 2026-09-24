@@ -1,3 +1,4 @@
+import { Auth } from './auth.ts';
 import { Bot } from './bot/router.ts';
 import type { Config } from './config.ts';
 import { Db } from './db/index.ts';
@@ -49,6 +50,9 @@ export function createApp(config: Config, deps: AppDeps = {}) {
   const events = new Events(db, clock, jobs, booking, notify);
   const polls = new Polls(db, clock, jobs, outbox, events, booking);
   const bot = new Bot(db, clock, members, booking, polls, outbox);
+  const auth = new Auth(db, clock, members, outbox, {
+    platformAdminPhones: config.platformAdminPhones, exposeDevCodes: config.devTools,
+  });
 
   /** Persist once per provider event id; returns false for duplicates. */
   function recordWebhook(provider: string, providerEventId: string, payload: unknown): string | null {
@@ -99,6 +103,7 @@ export function createApp(config: Config, deps: AppDeps = {}) {
   const webhooks = {
     /** Queue inbound messages for async processing (Meta expects a fast 200). */
     ingestInbound(messages: InboundMessage[], statuses: StatusUpdate[] = []): number {
+      // (the shared number receives every community's traffic; routing happens in the bot)
       let queued = 0;
       for (const m of messages) {
         const id = recordWebhook('whatsapp', m.providerMessageId, m);
@@ -116,7 +121,7 @@ export function createApp(config: Config, deps: AppDeps = {}) {
       let body: unknown;
       try { body = JSON.parse(rawBody.toString('utf8')); } catch { return { ok: false, status: 400 }; }
       const { messages, statuses } = parseCloudWebhook(body);
-      this.ingestInbound(messages, statuses);
+      webhooks.ingestInbound(messages, statuses);
       return { ok: true, status: 200 };
     },
 
@@ -145,5 +150,8 @@ export function createApp(config: Config, deps: AppDeps = {}) {
     jobs.schedule('daily_maintenance', {}, clock.now(), 'daily_maintenance');
   }
 
-  return { config, clock, db, jobs, outbox, notify, members, booking, events, polls, bot, webhooks, messaging, payments, boot };
+  /** wa.me link that opens a chat with the Dinqo number, pre-filled with "join <code>". */
+  const joinLink = (slug: string) => `https://wa.me/${config.whatsapp.displayNumber}?text=${encodeURIComponent(`join ${slug}`)}`;
+
+  return { config, clock, db, jobs, outbox, notify, members, booking, events, polls, bot, auth, webhooks, messaging, payments, boot, joinLink };
 }

@@ -281,7 +281,7 @@ export class Events {
          (SELECT COUNT(*) FROM registrations r WHERE r.player_id = p.id AND r.attendance = 'attended') AS attended,
          (SELECT COUNT(*) FROM registrations r WHERE r.player_id = p.id AND r.attendance = 'no_show') AS no_shows
        FROM memberships m JOIN players p ON p.id = m.player_id
-       JOIN consents c ON c.player_id = p.id AND c.purpose = 'community_games' AND c.granted = 1
+       JOIN consents c ON c.player_id = p.id AND c.community_id = m.community_id AND c.purpose = 'community_games' AND c.granted = 1
        WHERE m.community_id = ? AND m.status = 'active' AND p.blocked = 0
          AND NOT EXISTS (SELECT 1 FROM registrations r WHERE r.event_id = ? AND r.player_id = p.id
                          AND r.status IN ('waitlisted','offered','held','confirmed'))

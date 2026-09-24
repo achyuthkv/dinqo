@@ -9,6 +9,8 @@ if (process.env.NODE_ENV === 'production') {
     config.devTools && 'DEV_TOOLS must be false (the simulator bypasses webhook signatures)',
     config.whatsapp.provider === 'cloud' && !config.whatsapp.appSecret && 'WHATSAPP_APP_SECRET is required',
     config.payments.provider !== 'razorpay' && 'PAYMENTS_PROVIDER must be razorpay',
+    config.whatsapp.displayNumber === '919000000000' && 'WHATSAPP_DISPLAY_NUMBER must be the real Dinqo number (used in join links)',
+    config.platformAdminPhones.join(',') === '919845000000' && 'PLATFORM_ADMIN_PHONES must list the Dinqo team numbers',
   ].filter(Boolean);
   if (problems.length) {
     console.error('Refusing to start in production:\n  - ' + problems.join('\n  - '));
