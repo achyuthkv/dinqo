@@ -1,0 +1,24 @@
+{
+  "name": "dinqo",
+  "version": "0.1.0",
+  "description": "Project Dinqo — WhatsApp-native operating system for sports communities",
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env --import tsx --watch src/main.ts",
+    "start": "node --env-file-if-exists=.env --import tsx src/main.ts",
+    "seed": "node --env-file-if-exists=.env --import tsx src/seed.ts",
+    "test": "node --import tsx --test --test-reporter=spec \"test/**/*.test.ts\"",
+    "typecheck": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "typescript": "^5.9.3"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "tsx": "^4.23.15"
+  }
+}

@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dinqo Organiser</title>
+<style>
+  :root {
+    --bg:#f6f7f9; --card:#fff; --ink:#15181d; --muted:#6b7280; --line:#e5e7eb; --accent:#0f7b5f; --accent-ink:#fff;
+    --warn:#b45309; --bad:#b91c1c; --good:#15803d; --chip:#eef2f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#0f1115; --card:#171a21; --ink:#e7e9ee; --muted:#9aa3b2; --line:#2a2f3a; --accent:#34b389; --accent-ink:#06120d;
+      --warn:#f59e0b; --bad:#f87171; --good:#4ade80; --chip:#232835;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  header { display:flex; align-items:center; gap:12px; padding:12px 16px; border-bottom:1px solid var(--line); background:var(--card); flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; } header h1 span { color:var(--accent); }
+  nav { display:flex; gap:4px; flex-wrap:wrap; }
+  nav button { background:none; border:0; padding:8px 12px; border-radius:8px; color:var(--muted); font:inherit; cursor:pointer; }
+  nav button.on { background:var(--chip); color:var(--ink); font-weight:600; }
+  select, input, textarea { font:inherit; color:inherit; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:7px 9px; min-width:0; }
+  main { max-width:1100px; margin:0 auto; padding:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+  .card h2 { margin:0 0 12px; font-size:16px; } .card h3 { margin:16px 0 8px; font-size:14px; }
+  .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); }
+  .stat b { display:block; font-size:24px; } .stat span { color:var(--muted); font-size:12px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  .scroll { overflow-x:auto; }
+  .btn { background:var(--accent); color:var(--accent-ink); border:0; border-radius:8px; padding:7px 12px; font:inherit; font-weight:600; cursor:pointer; white-space:nowrap; }
+  .btn.ghost { background:var(--chip); color:var(--ink); font-weight:500; }
+  .btn.danger { background:none; color:var(--bad); border:1px solid var(--bad); font-weight:500; }
+  .btn.sm { padding:4px 8px; font-size:12px; }
+  .chip { display:inline-block; padding:2px 8px; border-radius:999px; background:var(--chip); font-size:12px; }
+  .s-confirmed { color:var(--good); } .s-held, .s-offered { color:var(--warn); } .s-cancelled, .s-expired, .s-declined { color:var(--muted); }
+  .bar { height:8px; background:var(--chip); border-radius:4px; overflow:hidden; display:flex; min-width:80px; }
+  .bar i { display:block; height:100%; } .bar .c { background:var(--good); } .bar .p { background:var(--warn); }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .muted { color:var(--muted); } .right { margin-left:auto; }
+  form.stack { display:grid; gap:10px; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); }
+  form.stack label { display:grid; gap:4px; font-size:12px; color:var(--muted); }
+  a { color:var(--accent); cursor:pointer; }
+  dialog { border:1px solid var(--line); border-radius:12px; background:var(--card); color:var(--ink); max-width:min(720px, 94vw); width:100%; }
+  dialog::backdrop { background:rgba(0,0,0,.4); }
+  #toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:8px 14px; border-radius:8px; display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Din<span>qo</span></h1>
+  <select id="community" aria-label="Community"></select>
+  <nav id="tabs">
+    <button data-tab="dashboard" class="on">Dashboard</button>
+    <button data-tab="games">Games</button>
+    <button data-tab="members">Members</button>
+    <button data-tab="setup">Setup</button>
+  </nav>
+  <span class="right row"><a href="/dev/simulator" target="_blank">WhatsApp simulator ↗</a><button class="btn ghost sm" id="logout">API key</button></span>
+</header>
+<main id="view"></main>
+<dialog id="dlg"><div id="dlgBody"></div><div class="row" style="margin-top:12px"><button class="btn ghost right" onclick="dlg.close()">Close</button></div></dialog>
+<div id="toast"></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const rupees = (p) => '₹' + (p / 100).toLocaleString('en-IN');
+const when = (iso) => new Date(iso).toLocaleString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+let KEY = store.get('dinqo.key') || 'dev-admin-key';
+let CID = store.get('dinqo.community');
+let TAB = 'dashboard';
+
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 2600); }
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/json', ...(opts.headers || {}) },
+    body: opts.body && typeof opts.body !== 'string' ? JSON.stringify(opts.body) : opts.body });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { askKey(); throw new Error('unauthorised'); }
+  if (!res.ok) { toast(data.error || 'Request failed'); throw new Error(data.error); }
+  return data;
+}
+function askKey() { const k = prompt('Organiser API key (ADMIN_API_KEY):', KEY); if (k) { KEY = k; store.set('dinqo.key', k); boot(); } }
+$('#logout').onclick = askKey;
+
+async function boot() {
+  const cs = await api('/api/communities');
+  const sel = $('#community');
+  sel.innerHTML = cs.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('') + '<option value="__new">+ New community…</option>';
+  if (!cs.length) { CID = null; return renderSetupEmpty(); }
+  if (!cs.some((c) => c.id === CID)) CID = cs[0].id;
+  sel.value = CID;
+  render();
+}
+$('#community').onchange = (e) => {
+  if (e.target.value === '__new') return createCommunity();
+  CID = e.target.value; store.set('dinqo.community', CID); render();
+};
+$('#tabs').onclick = (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  TAB = b.dataset.tab; document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('on', x === b)); render();
+};
+async function createCommunity() {
+  const name = prompt('Community name'); if (!name) return boot();
+  const slug = prompt('Short code players type to join (e.g. doc)', name.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 12)); if (!slug) return boot();
+  const locs = prompt('Areas offered at sign-up (comma separated)', 'Jayanagar, HSR Layout, Koramangala, Indiranagar') || '';
+  const c = await api('/api/communities', { method: 'POST', body: { name, slug, locations: locs.split(',').map((s) => s.trim()).filter(Boolean) } });
+  CID = c.id; store.set('dinqo.community', CID); boot();
+}
+function renderSetupEmpty() { $('#view').innerHTML = `<div class="card"><h2>Welcome to Dinqo</h2><p>Create your first community to get started.</p><button class="btn" onclick="createCommunity()">Create community</button></div>`; }
+function render() { ({ dashboard, games, members, setup })[TAB](); }
+
+function fillBar(e) {
+  const c = e.confirmed / e.capacity * 100, p = e.pending / e.capacity * 100;
+  return `<div class="bar" title="${e.confirmed} confirmed, ${e.pending} pending"><i class="c" style="width:${c}%"></i><i class="p" style="width:${p}%"></i></div>`;
+}
+
+// ------------------------------------------------------------------ dashboard
+async function dashboard() {
+  const d = await api(`/api/communities/${CID}/dashboard`);
+  const poll = d.latest_polls[0];
+  $('#view').innerHTML = `
+    <div class="grid">
+      <div class="card stat"><b>${d.members}</b><span>members · ${d.regulars} regulars</span></div>
+      <div class="card stat"><b>${d.upcoming.length}</b><span>upcoming games</span></div>
+      <div class="card stat"><b>${d.attendance_rate_30d ?? '—'}${d.attendance_rate_30d != null ? '%' : ''}</b><span>attendance, 30 days</span></div>
+      <div class="card stat"><b>${d.net_revenue_30d}</b><span>net revenue, 30 days</span></div>
+    </div>
+    <div class="card">
+      <div class="row"><h2>Availability poll</h2><button class="btn right" id="runPoll">Send poll now</button></div>
+      <p class="muted">Next scheduled: <b>${d.next_poll_at ? when(d.next_poll_at) : 'not scheduled'}</b>.
+      ${poll ? `Last round ${when(poll.sent_at)}: ${poll.responded ?? 0} responded, ${poll.not_this_week ?? 0} not this week, ${poll.awaiting ?? 0} awaiting, ${poll.skipped ?? 0} skipped.` : 'No rounds sent yet.'}</p>
+    </div>
+    <div class="card"><h2>Upcoming games</h2>${gamesTable(d.upcoming)}</div>
+    ${d.refunds_needing_attention ? `<div class="card"><b class="s-held">${d.refunds_needing_attention} refund(s) pending or failed.</b> <a onclick="refunds()">Review</a></div>` : ''}`;
+  $('#runPoll').onclick = async () => {
+    const r = await api(`/api/communities/${CID}/polls/run`, { method: 'POST' });
+    toast(r.poll_id ? `Poll sent to ${r.sent} regulars (${r.events} games)` : 'No open games in the poll window');
+    dashboard();
+  };
+  bindGameLinks();
+}
+
+function gamesTable(list) {
+  if (!list.length) return '<p class="muted">No games. Create one in Setup, or add a weekly series.</p>';
+  return `<div class="scroll"><table><tr><th>When</th><th>Game</th><th>Fill</th><th>Confirmed</th><th>Waitlist</th><th>Open</th><th></th></tr>
+    ${list.map((e) => `<tr>
+      <td>${when(e.starts_at)}</td>
+      <td><a data-game="${e.id}">${esc(e.title)}</a><br><span class="muted">${esc(e.venue_name || '')} · ${e.price_paise ? rupees(e.price_paise) : 'Free'} · ${e.visibility === 'invite_only' ? 'invite-only' : 'members'}</span></td>
+      <td>${fillBar(e)}</td><td>${e.confirmed}/${e.capacity}${e.pending ? ` <span class="s-held">+${e.pending}</span>` : ''}</td>
+      <td>${e.waitlisted || ''}</td><td>${e.status === 'open' ? e.open_slots : `<span class="chip">${e.status}</span>`}</td>
+      <td>${e.status === 'open' && e.open_slots ? `<button class="btn sm" data-fill="${e.id}">Fill ${e.open_slots}</button>` : ''}</td></tr>`).join('')}
+  </table></div>`;
+}
+function bindGameLinks() {
+  document.querySelectorAll('[data-game]').forEach((a) => a.onclick = () => gameDetail(a.dataset.game));
+  document.querySelectorAll('[data-fill]').forEach((b) => b.onclick = () => fillDialog(b.dataset.fill));
+}
+
+// ---------------------------------------------------------------------- games
+async function games() {
+  const list = await api(`/api/communities/${CID}/events?from=${encodeURIComponent(new Date(Date.now() - 14 * 86400000).toISOString())}`);
+  $('#view').innerHTML = `<div class="card"><h2>Games (last 2 weeks and upcoming)</h2>${gamesTable(list)}</div>`;
+  bindGameLinks();
+}
+
+async function gameDetail(id) {
+  const e = await api(`/api/events/${id}`);
+  const started = new Date(e.starts_at) <= new Date();
+  const regs = e.registrations.filter((r) => !['declined'].includes(r.status));
+  $('#view').innerHTML = `
+    <div class="card">
+      <div class="row"><a onclick="render()">← Back</a></div>
+      <div class="row"><h2 style="margin:8px 0">${esc(e.title)}</h2><span class="chip">${e.status}</span>
+        ${e.status === 'open' ? `<button class="btn danger sm right" id="cancelEvent">Cancel game</button>` : ''}</div>
+      <p class="muted">${when(e.starts_at)} · ${esc(e.venue_name || 'No venue')} · ${e.skill_level || 'All levels'} · ${e.price_paise ? rupees(e.price_paise) : 'Free'}
+        · full refund until ${when(e.cancellation_deadline || e.starts_at)}${e.late_refund_percent ? `, then ${e.late_refund_percent}%` : ''}</p>
+      <div class="grid">
+        <div class="stat"><b>${e.seats_taken}/${e.capacity}</b><span>seats taken</span></div>
+        <div class="stat"><b>${e.open_slots}</b><span>open slots</span></div>
+        <div class="stat"><b>${rupees(e.revenue_paise)}</b><span>net collected</span></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        ${e.status === 'open' && e.open_slots ? `<button class="btn" id="fill">Fill ${e.open_slots} open slot(s)</button>` : ''}
+        ${e.status === 'open' ? `<label class="row">Capacity <input type="number" id="cap" value="${e.capacity}" min="1" style="width:72px"></label><button class="btn ghost sm" id="saveCap">Save</button>` : ''}
+      </div>
+    </div>
+    <div class="card"><h2>Players</h2>
+      ${regs.length ? `<div class="scroll"><table><tr><th>Player</th><th>Status</th><th>Paid</th><th>Attendance</th><th></th></tr>
+      ${regs.map((r) => `<tr>
+        <td>${esc(r.name || '—')}<br><span class="muted">${r.phone}</span></td>
+        <td class="s-${r.status}">${r.status}${r.status === 'held' || r.status === 'offered' ? `<br><span class="muted">until ${when(r.expires_at)}</span>` : ''}</td>
+        <td>${r.paid_paise ? rupees(r.paid_paise) : '—'}${r.refunded_paise ? `<br><span class="muted">refund ${rupees(r.refunded_paise)} (${esc(r.refund_statuses)})</span>` : ''}</td>
+        <td>${r.status === 'confirmed' ? `
+          <button class="btn sm ${r.attendance === 'attended' ? '' : 'ghost'}" data-att="${r.player_id}" data-v="attended">Played</button>
+          <button class="btn sm ${r.attendance === 'no_show' ? 'danger' : 'ghost'}" data-att="${r.player_id}" data-v="no_show">No-show</button>` : ''}</td>
+        <td>${['confirmed', 'held', 'offered', 'waitlisted'].includes(r.status) ? `<button class="btn danger sm" data-rm="${r.player_id}">Remove</button>` : ''}</td>
+      </tr>`).join('')}</table></div>` : '<p class="muted">Nobody yet.</p>'}
+    </div>
+    <div class="card"><h2>Invitations (${e.invitations.length})</h2>
+      ${e.invitations.length ? `<div class="scroll"><table><tr><th>Player</th><th>Via</th><th>Status</th></tr>
+      ${e.invitations.map((i) => `<tr><td>${esc(i.name || i.phone)}</td><td>${i.source}</td><td>${i.status}${i.skip_reason ? ` <span class="muted">(${i.skip_reason})</span>` : ''}</td></tr>`).join('')}</table></div>` : '<p class="muted">No invitations yet.</p>'}
+    </div>`;
+  $('#fill') && ($('#fill').onclick = () => fillDialog(id));
+  $('#saveCap') && ($('#saveCap').onclick = async () => { await api(`/api/events/${id}`, { method: 'PATCH', body: { capacity: Number($('#cap').value) } }); toast('Capacity updated'); gameDetail(id); });
+  $('#cancelEvent') && ($('#cancelEvent').onclick = async () => {
+    const reason = prompt('Cancel this game for everyone? Everyone paid will be refunded in full.\nReason (optional):');
+    if (reason === null) return;
+    await api(`/api/events/${id}/cancel`, { method: 'POST', body: { reason: reason || undefined } }); toast('Game cancelled'); gameDetail(id);
+  });
+  document.querySelectorAll('[data-att]').forEach((b) => b.onclick = async () => {
+    await api(`/api/events/${id}/attendance`, { method: 'POST', body: { marks: [{ player_id: b.dataset.att, attendance: b.dataset.v }] } }); gameDetail(id);
+  });
+  document.querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Remove this player? Any payment is refunded in full.')) return;
+    await api(`/api/events/${id}/registrations/${b.dataset.rm}/cancel`, { method: 'POST', body: {} }); gameDetail(id);
+  });
+}
+
+async function fillDialog(id) {
+  const [e, cands] = await Promise.all([api(`/api/events/${id}`), api(`/api/events/${id}/candidates`)]);
+  const suggested = Math.ceil(e.open_slots * 1.5);
+  $('#dlgBody').innerHTML = `<h2>Fill ${esc(e.title)} — ${e.open_slots} open slot(s)</h2>
+    <p class="muted">Ranked by preferred time, area, skill, recent play and reliability. The top ${suggested} are pre-selected (not everyone says yes).</p>
+    ${cands.length ? `<div class="scroll"><table><tr><th></th><th>Player</th><th>Tier</th><th>Score</th><th>Why</th></tr>
+    ${cands.map((c, i) => `<tr><td><input type="checkbox" value="${c.player_id}" ${i < suggested ? 'checked' : ''}></td>
+      <td>${esc(c.name || '—')}</td><td>${c.tier}</td><td>${c.score}</td><td class="muted">${esc(c.reasons.join(', '))}</td></tr>`).join('')}</table></div>
+    <div class="row" style="margin-top:12px"><button class="btn" id="sendInv">Send invitations</button></div>` : '<p>No more eligible players (everyone is invited, booked, declined, or has invites turned off).</p>'}`;
+  dlg.showModal();
+  $('#sendInv') && ($('#sendInv').onclick = async () => {
+    const ids = [...document.querySelectorAll('#dlgBody input:checked')].map((x) => x.value);
+    if (!ids.length) return toast('Pick at least one player');
+    const r = await api(`/api/events/${id}/fill`, { method: 'POST', body: { player_ids: ids } });
+    const sent = r.invited.filter((x) => x.status === 'sent').length;
+    toast(`${sent} invited${r.invited.length - sent ? `, ${r.invited.length - sent} skipped` : ''}`);
+    dlg.close(); render();
+  });
+}
+
+// -------------------------------------------------------------------- members
+async function members(q = '') {
+  const list = await api(`/api/communities/${CID}/members${q ? '?q=' + encodeURIComponent(q) : ''}`);
+  $('#view').innerHTML = `
+    <div class="card"><div class="row"><h2>Members (${list.length})</h2>
+      <input id="q" placeholder="Search name or phone" value="${esc(q)}" class="right"></div>
+      <div class="scroll"><table><tr><th>Name</th><th>Tier</th><th>Level</th><th>Areas</th><th>Invites</th><th>Played</th><th>Last played</th><th></th></tr>
+      ${list.map((m) => `<tr>
+        <td><a data-hist="${m.id}">${esc(m.name || '—')}</a><br><span class="muted">${m.phone}</span></td>
+        <td><select data-tier="${m.id}"><option ${m.tier === 'regular' ? 'selected' : ''}>regular</option><option ${m.tier === 'guest' ? 'selected' : ''}>guest</option></select></td>
+        <td>${m.skill_level || '—'}</td><td>${esc(m.preferred_locations.join(', '))}</td>
+        <td>${m.invites_ok ? '✓' : '<span class="muted">off</span>'}</td><td>${m.games_attended}</td>
+        <td>${m.last_played_at ? when(m.last_played_at) : '—'}</td>
+        <td><button class="btn ghost sm" data-remove="${m.id}">Remove</button></td></tr>`).join('')}</table></div>
+    </div>
+    <div class="card"><h2>Import members</h2>
+      <p class="muted">CSV with a header row: <code>phone,name,skill_level,tier,opted_in,preferred_locations</code>. Imported members default to <b>regular</b>.
+      Only mark <code>opted_in=yes</code> for people who agreed to get game messages on WhatsApp — everyone else is asked when they first message you.</p>
+      <textarea id="csv" rows="5" style="width:100%" placeholder="phone,name,skill_level,tier,opted_in,preferred_locations&#10;9845012345,Rahul,intermediate,regular,yes,Jayanagar;HSR Layout"></textarea>
+      <div class="row" style="margin-top:8px"><button class="btn" id="import">Import</button></div>
+    </div>`;
+  $('#q').onchange = (e) => members(e.target.value);
+  $('#import').onclick = async () => {
+    const r = await api(`/api/communities/${CID}/members/import`, { method: 'POST', body: { csv: $('#csv').value } });
+    toast(`${r.created} added, ${r.updated} updated${r.errors.length ? `, ${r.errors.length} errors` : ''}`);
+    if (r.errors.length) alert(r.errors.map((x) => `Row ${x.row + 1}: ${x.error}`).join('\n'));
+    members();
+  };
+  document.querySelectorAll('[data-tier]').forEach((s) => s.onchange = async () => {
+    await api(`/api/communities/${CID}/members/${s.dataset.tier}`, { method: 'PATCH', body: { tier: s.value } }); toast('Tier updated');
+  });
+  document.querySelectorAll('[data-remove]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Remove this member from the community?')) return;
+    await api(`/api/communities/${CID}/members/${b.dataset.remove}`, { method: 'PATCH', body: { status: 'removed' } }); members(q);
+  });
+  document.querySelectorAll('[data-hist]').forEach((a) => a.onclick = () => history(a.dataset.hist));
+}
+
+async function history(pid) {
+  const h = await api(`/api/communities/${CID}/members/${pid}/history`);
+  const s = h.stats;
+  $('#dlgBody').innerHTML = `<h2>${esc(h.player.name || h.player.phone)}</h2>
+    <p class="muted">${h.player.phone} · ${h.player.skill_level || 'level not set'} · invites ${h.consents.community_games ? 'on' : 'off'}</p>
+    <div class="grid">
+      <div class="stat"><b>${s.played}</b><span>played</span></div>
+      <div class="stat"><b>${s.no_shows}</b><span>no-shows</span></div>
+      <div class="stat"><b>${s.cancellations}</b><span>cancellations</span></div>
+      <div class="stat"><b>${s.attendance_rate == null ? '—' : Math.round(s.attendance_rate * 100) + '%'}</b><span>attendance</span></div>
+      <div class="stat"><b>${rupees(s.total_paid_paise - s.total_refunded_paise)}</b><span>net paid</span></div>
+    </div>
+    <h3>Timeline</h3><div class="scroll"><table><tr><th>Game</th><th>Invite</th><th>Status</th><th>Attendance</th><th>Paid</th></tr>
+    ${h.events.map((e) => `<tr><td>${esc(e.title)}<br><span class="muted">${when(e.starts_at)}</span></td><td>${e.invitation_status || '—'}</td>
+      <td class="s-${e.status}">${e.status || '—'}</td><td>${e.attendance || '—'}</td>
+      <td>${e.paid_paise ? rupees(e.paid_paise) : '—'}${e.refunded_paise ? ` <span class="muted">(−${rupees(e.refunded_paise)})</span>` : ''}</td></tr>`).join('')}</table></div>`;
+  dlg.showModal();
+}
+
+async function refunds() {
+  const list = await api('/api/refunds');
+  $('#dlgBody').innerHTML = `<h2>Refunds</h2><div class="scroll"><table><tr><th>Player</th><th>Game</th><th>Amount</th><th>Reason</th><th>Status</th><th></th></tr>
+    ${list.map((r) => `<tr><td>${esc(r.name || r.phone)}</td><td>${esc(r.title)}</td><td>${rupees(r.amount_paise)}</td><td>${r.reason}</td><td>${r.status}</td>
+      <td>${r.status === 'failed' ? `<button class="btn sm" data-retry="${r.id}">Retry</button>` : ''}</td></tr>`).join('')}</table></div>`;
+  dlg.showModal();
+  document.querySelectorAll('[data-retry]').forEach((b) => b.onclick = async () => { await api(`/api/refunds/${b.dataset.retry}/retry`, { method: 'POST' }); refunds(); });
+}
+
+// ---------------------------------------------------------------------- setup
+async function setup() {
+  const [c, venues, series] = await Promise.all([api(`/api/communities/${CID}`), api(`/api/communities/${CID}/venues`), api(`/api/communities/${CID}/series`)]);
+  const days = JSON.parse(c.poll_days);
+  const dayNames = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+  const venueOpts = venues.map((v) => `<option value="${v.id}">${esc(v.name)}${v.area ? ' — ' + esc(v.area) : ''}</option>`).join('');
+  $('#view').innerHTML = `
+    <div class="card"><h2>Availability poll</h2>
+      <p class="muted">Regular members get a WhatsApp message on these days listing the week's games. Tapping a game holds their spot.</p>
+      <div class="row">${dayNames.map((d) => `<label class="row"><input type="checkbox" name="pd" value="${d}" ${days.includes(d) ? 'checked' : ''}>${d}</label>`).join('')}
+        <label class="row">at <input type="time" id="pt" value="${c.poll_time.padStart(5, '0')}"></label>
+        <label class="row">covering the next <input type="number" id="ph" value="${c.poll_horizon_days}" min="1" max="14" style="width:60px"> days</label>
+        <label class="row"><input type="checkbox" id="pe" ${c.poll_enabled ? 'checked' : ''}> enabled</label>
+        <button class="btn" id="savePoll">Save</button></div>
+    </div>
+    <div class="card"><h2>Weekly series</h2>
+      ${series.length ? `<table><tr><th>Series</th><th>When</th><th>Seats</th><th>Price</th><th>Active</th></tr>${series.map((s) => `<tr><td>${esc(s.title)}</td><td>${s.weekday} ${s.start_time}</td><td>${s.capacity}</td><td>${s.price_paise ? rupees(s.price_paise) : 'Free'}</td>
+        <td><input type="checkbox" data-series="${s.id}" ${s.active ? 'checked' : ''}></td></tr>`).join('')}</table>` : '<p class="muted">No weekly series yet.</p>'}
+      <h3>Add a weekly series</h3>
+      <form class="stack" id="seriesForm">
+        <label>Title<input name="title" required placeholder="Sunday Community Play"></label>
+        <label>Venue<select name="venue_id"><option value="">—</option>${venueOpts}</select></label>
+        <label>Day<select name="weekday">${dayNames.map((d) => `<option>${d}</option>`).join('')}</select></label>
+        <label>Start time<input name="start_time" type="time" value="07:00" required></label>
+        <label>Duration (min)<input name="duration_minutes" type="number" value="120"></label>
+        <label>Players<input name="capacity" type="number" value="16" min="1" required></label>
+        <label>Level<select name="skill_level"><option value="">All levels</option><option>beginner</option><option>intermediate</option><option>advanced</option></select></label>
+        <label>Price (₹)<input name="price" type="number" value="350" min="0"></label>
+        <label>Free cancel until (hrs before)<input name="cancel_hours_before" type="number" value="12"></label>
+        <label>Late refund %<input name="late_refund_percent" type="number" value="0" min="0" max="100"></label>
+        <label>Who can book<select name="visibility"><option value="invite_only">Invite-only</option><option value="members">Any member</option></select></label>
+        <label>&nbsp;<button class="btn">Add series</button></label>
+      </form>
+    </div>
+    <div class="card"><h2>One-off game</h2>
+      <form class="stack" id="eventForm">
+        <label>Title<input name="title" required></label>
+        <label>Venue<select name="venue_id"><option value="">—</option>${venueOpts}</select></label>
+        <label>Starts<input name="starts" type="datetime-local" required></label>
+        <label>Duration (min)<input name="duration" type="number" value="120"></label>
+        <label>Players<input name="capacity" type="number" value="16" min="1" required></label>
+        <label>Level<select name="skill_level"><option value="">All levels</option><option>beginner</option><option>intermediate</option><option>advanced</option></select></label>
+        <label>Price (₹)<input name="price" type="number" value="350" min="0"></label>
+        <label>Free cancel until (hrs before)<input name="cancel_hours" type="number" value="12"></label>
+        <label>Late refund %<input name="late_refund_percent" type="number" value="0" min="0" max="100"></label>
+        <label>Who can book<select name="visibility"><option value="invite_only">Invite-only</option><option value="members">Any member</option></select></label>
+        <label>&nbsp;<button class="btn">Create game</button></label>
+      </form>
+    </div>
+    <div class="card"><h2>Venues</h2>
+      <p>${venues.map((v) => `<span class="chip">${esc(v.name)}${v.area ? ' · ' + esc(v.area) : ''}</span>`).join(' ') || '<span class="muted">None yet.</span>'}</p>
+      <form class="row" id="venueForm"><input name="name" placeholder="Venue name" required><input name="area" placeholder="Area (e.g. Jayanagar)"><button class="btn">Add venue</button></form>
+    </div>`;
+  $('#savePoll').onclick = async () => {
+    await api(`/api/communities/${CID}/poll-settings`, { method: 'PATCH', body: {
+      poll_days: [...document.querySelectorAll('input[name=pd]:checked')].map((x) => x.value),
+      poll_time: $('#pt').value, poll_horizon_days: Number($('#ph').value), poll_enabled: $('#pe').checked } });
+    toast('Poll settings saved');
+  };
+  document.querySelectorAll('[data-series]').forEach((x) => x.onchange = () => api(`/api/series/${x.dataset.series}`, { method: 'PATCH', body: { active: x.checked } }));
+  $('#seriesForm').onsubmit = async (ev) => {
+    ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target));
+    await api(`/api/communities/${CID}/series`, { method: 'POST', body: {
+      title: f.title, venue_id: f.venue_id || null, weekday: f.weekday, start_time: f.start_time, duration_minutes: Number(f.duration_minutes),
+      capacity: Number(f.capacity), skill_level: f.skill_level || null, price_paise: Math.round(Number(f.price) * 100),
+      cancel_hours_before: Number(f.cancel_hours_before), late_refund_percent: Number(f.late_refund_percent), visibility: f.visibility } });
+    await api(`/api/communities/${CID}/series/generate`, { method: 'POST', body: { days: 7 } });
+    toast('Series added — this week\'s game created'); setup();
+  };
+  $('#eventForm').onsubmit = async (ev) => {
+    ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target));
+    const starts = new Date(f.starts);
+    await api(`/api/communities/${CID}/events`, { method: 'POST', body: {
+      title: f.title, venue_id: f.venue_id || null, starts_at: starts.toISOString(),
+      ends_at: new Date(starts.getTime() + Number(f.duration) * 60000).toISOString(), capacity: Number(f.capacity),
+      skill_level: f.skill_level || null, price_paise: Math.round(Number(f.price) * 100), visibility: f.visibility,
+      cancellation_deadline: new Date(starts.getTime() - Number(f.cancel_hours) * 3600000).toISOString(),
+      late_refund_percent: Number(f.late_refund_percent) } });
+    toast('Game created'); TAB = 'games'; document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('on', x.dataset.tab === 'games')); render();
+  };
+  $('#venueForm').onsubmit = async (ev) => {
+    ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target));
+    await api(`/api/communities/${CID}/venues`, { method: 'POST', body: f }); setup();
+  };
+}
+
+boot();
+</script>
+</body>
+</html>
